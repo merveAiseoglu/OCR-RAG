@@ -1,0 +1,15 @@
+# Node & Python Ortamları
+node_modules/
+venv/
+__pycache__/
+
+# Çevresel Değişkenler (Gizli Bilgiler)
+.env
+
+# Veritabanı ve Loglar
+chroma_db_store/
+app.log
+
+# İşlenmiş Çıktılar (İsteğe bağlı)
+processed_documents.json
+processed_files_log.json
