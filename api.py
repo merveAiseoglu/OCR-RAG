@@ -6,13 +6,18 @@ OCR RAG API v3.9 - Final Tam Sürüm
 3. Fotoğraf Analizi (OpenCV + EasyOCR + GPT) -> EKLENDİ
 """
 
+import os
+from dotenv import load_dotenv
+
+# .env dosyasını en başta yüklüyoruz
+load_dotenv()
+
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
-import os
+from typing import List, Optional, Dict, Any, Union, cast
 import time
 import logging
 import re
@@ -25,7 +30,6 @@ import cv2 # OpenCV
 
 # --- OPENAI ENTEGRASYONU ---
 from openai import OpenAI
-from dotenv import load_dotenv
 
 # --- DİĞER KÜTÜPHANELER ---
 import aiofiles
@@ -38,7 +42,6 @@ import fitz  # PyMuPDF
 from PIL import Image
 
 # --- ORTAM DEĞİŞKENLERİ ---
-load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not OPENAI_API_KEY:
@@ -103,13 +106,15 @@ async def startup_event():
     state.embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
     
     state.chroma_client = chromadb.PersistentClient(path=state.db_path)
-    state.collection = state.chroma_client.get_or_create_collection(
-        name="hukuk_dokumanlari",
-        embedding_function=MyEmbeddingFunction(state.embedding_model),
-        metadata={"hnsw:space": "cosine"}
-    )
-    os.makedirs(state.documents_folder, exist_ok=True)
-    logger.info(f"✅ SİSTEM HAZIR. Koleksiyondaki belge sayısı: {state.collection.count()}")
+    if state.chroma_client is not None:
+        state.collection = state.chroma_client.get_or_create_collection(
+            name="hukuk_dokumanlari",
+            embedding_function=MyEmbeddingFunction(state.embedding_model),
+            metadata={"hnsw:space": "cosine"}
+        )
+        logger.info(f"✅ SİSTEM HAZIR. Koleksiyondaki belge sayısı: {state.collection.count() if state.collection else 0}")
+    else:
+        logger.warning("⚠️ ChromaDB Client başlatılamadı.")
 
 # ==========================================
 # 1. OCR GÖRÜNTÜ İŞLEME MANTIĞI (Senin Kodun)
@@ -153,14 +158,16 @@ def goruntu_isleyerek_oku(image_bytes):
             roi = img[y:y+h, x:x+w]
             try:
                 # EasyOCR ile parça parça oku
-                okunan = state.ocr_reader.readtext(roi, detail=0)
-                if okunan:
-                    bulunan_metinler.append(" ".join(okunan))
+                if state.ocr_reader is not None:
+                    okunan = state.ocr_reader.readtext(roi, detail=0)
+                    if okunan:
+                        bulunan_metinler.append(" ".join(str(o) for o in okunan))
             except: pass
         
         # Eğer OpenCV yöntemiyle hiçbir şey çıkmazsa, resmi düz okumayı dene (Fallback)
-        if not bulunan_metinler:
-            return " ".join(state.ocr_reader.readtext(img, detail=0))
+        if not bulunan_metinler and state.ocr_reader is not None:
+            okunan = state.ocr_reader.readtext(img, detail=0)
+            return " ".join(str(o) for o in okunan)
 
         return "\n".join(bulunan_metinler)
         
@@ -181,8 +188,9 @@ def pdf_ocr_yap_advanced(pdf_path: str) -> Dict[int, str]:
             try:
                 pix = sayfa.get_pixmap(matrix=fitz.Matrix(3, 3))
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
-                ocr_res = state.ocr_reader.readtext(img, detail=0, paragraph=True)
-                metin = " ".join(ocr_res)
+                if state.ocr_reader is not None:
+                    ocr_res = state.ocr_reader.readtext(np.array(img), detail=0, paragraph=True)
+                    metin = " ".join(str(o) for o in ocr_res)
             except Exception as e:
                 logger.error(f"OCR Hatası (Sayfa {sayfa_no+1}): {e}")
         sayfa_metinleri[sayfa_no + 1] = metin or ""
@@ -249,18 +257,19 @@ async def yukle(file: UploadFile = File(...)):
     
     path = os.path.join(state.documents_folder, file.filename)
     try:
-        try:
-            old_data = state.collection.get(where={"dosya": file.filename})
-            if old_data and old_data['ids']:
-                state.collection.delete(ids=old_data['ids'])
-        except: pass
+        if state.collection is not None:
+            try:
+                old_data = state.collection.get(where={"dosya": file.filename})
+                if old_data and old_data.get('ids'):
+                    state.collection.delete(ids=old_data['ids'])
+            except: pass
 
         async with aiofiles.open(path, 'wb') as f:
             await f.write(await file.read())
             
         chunks = await run_in_threadpool(worker_process, path, file.filename)
         
-        if chunks:
+        if chunks and state.collection is not None:
             ids = [f"{file.filename}_{c['metadata']['chunk_index']}_{uuid.uuid4().hex[:6]}" for c in chunks]
             docs = [c["metin"] for c in chunks]
             metas = [metadata_temizle(c["metadata"]) for c in chunks]
@@ -279,27 +288,42 @@ async def soru_sor(req: SoruModel):
     if not soru or len(soru) < 3: return {"cevap": "Geçersiz soru.", "kaynaklar": []}
 
     try:
+        if state.collection is None:
+            return {"cevap": "Veritabanı hazır değil.", "kaynaklar": []}
+
         # Vektör Arama
         results = state.collection.query(query_texts=[soru], n_results=req.top_k)
-        if not results['documents'] or not results['documents'][0]:
+        if not results.get('documents') or not results['documents'][0]:
              return {"cevap": "Bilgi bulunamadı.", "kaynaklar": []}
 
         # Filtreleme
-        raw_docs, raw_metas, raw_dists = results['documents'][0], results['metadatas'][0], results['distances'][0]
+        raw_docs: List[str] = list(results['documents'][0]) if results.get('documents') and results['documents'] else []
+        raw_metas: List[Dict[str, Any]] = list(results['metadatas'][0]) if results.get('metadatas') and results['metadatas'] else [] # type: ignore
+        raw_dists: List[float] = list(results['distances'][0]) if results.get('distances') and results['distances'] else [] # type: ignore
+        
+        if not raw_dists:
+            return {"cevap": "Uzaklık bilgisi bulunamadı.", "kaynaklar": []}
+
         en_iyi_skor = 1 - raw_dists[0]
         dinamik_esik = en_iyi_skor * 0.85 if en_iyi_skor > 0.75 else max(en_iyi_skor * 0.70, 0.30)
 
         combined = []
-        for doc, meta, dist in zip(raw_docs, raw_metas, raw_dists):
+        for i in range(len(raw_docs)):
+            doc = raw_docs[i]
+            meta = raw_metas[i] if len(raw_metas) > i else {}
+            dist = raw_dists[i] if len(raw_dists) > i else 1.0
             if (1 - dist) >= dinamik_esik:
                 combined.append({"text": doc, "meta": meta})
 
         if not combined: return {"cevap": "Yeterli eşleşme yok.", "kaynaklar": []}
 
         # Context Hazırla
-        combined.sort(key=lambda x: x["meta"].get("chunk_index", 9999))
-        ai_baglam = "\n---\n".join([item['text'] for item in combined])
-        kaynaklar = [{"source": c["meta"].get("dosya"), "page": c["meta"].get("sayfa"), "type": c["meta"].get("madde_no")} for c in combined]
+        combined.sort(key=lambda x: int(cast(dict, x["meta"]).get("chunk_index", 9999)) if isinstance(x["meta"], dict) else 9999)
+        ai_baglam = "\n---\n".join([str(item['text']) for item in combined])
+        kaynaklar = [
+            {"source": str(cast(dict, c["meta"]).get("dosya", "")), "page": int(cast(dict, c["meta"]).get("sayfa", 0)), "type": str(cast(dict, c["meta"]).get("madde_no", ""))}
+            for c in combined if isinstance(c["meta"], dict)
+        ]
 
         # ChatGPT
         resp = client.chat.completions.create(
@@ -374,6 +398,74 @@ async def foto_analiz(file: UploadFile = File(...), soru: str = Form("Bu belgede
     except Exception as e:
         logger.error(f"Fotoğraf Analiz Hatası: {e}")
         raise HTTPException(500, f"İşlem başarısız: {str(e)}")
+
+# --- MOCK API ENDPOINTS (3. ve 4. Geliştirici İçin) ---
+@app.get("/api/agent/proactive-search")
+async def check_proactive_findings():
+    """
+    Arka planda (cron/background task) çalışan AI ajanının bulduğu sonuçları simüle eder.
+    """
+    return {
+        "bulunanlar": [
+            {
+                "id": uuid.uuid4().hex[:8],
+                "mesaj": "TÜBİTAK 1512 BİGG Programı Başvuruları Açıldı! 🚀 Senin için buldum 👋",
+                "tarih": time.strftime("%Y-%m-%d"),
+                "tip": "hibe"
+            }
+        ]
+    }
+
+@app.post("/api/action/calendar/add")
+async def add_to_calendar(data: dict):
+    """
+    Kullanıcının onayladığı bir görevi/tarihi Google Takvim'e eklemiş gibi simüle eder.
+    Beklenen data formatı: {"baslik": "Proje Teslimi", "tarih": "2024-06-15"}
+    """
+    baslik = data.get("baslik", "Bilinmeyen Etkinlik")
+    tarih = data.get("tarih", "Bilinmeyen Tarih")
+    logger.info(f"📅 Google Takvim'e eklendi: {baslik} - {tarih}")
+    return {"status": "success", "message": f"'{baslik}' isimli etkinlik Google Takvim'e eklendi!"}
+
+@app.post("/api/action/tasks/add")
+async def add_to_tasks(data: dict):
+    """
+    Kullanıcının onayladığı bir iş paketini Google Tasks'e (To Do) eklemiş gibi simüle eder.
+    Beklenen data formatı: {"gorev": "Şartnameyi oku", "bitis_tarihi": "2024-06-15"}
+    """
+    gorev = data.get("gorev", "Bilinmeyen Görev")
+    logger.info(f"✅ Google Tasks'e eklendi: {gorev}")
+    return {"status": "success", "message": f"'{gorev}' isimli görev Google Tasks'e eklendi!"}
+
+@app.get("/api/mock-task")
+async def get_mock_task():
+    """
+    Frontend entegrasyonu için örnek bir task döndürür.
+    """
+    return {
+        "id": 1,
+        "title": "TÜBİTAK Yarışma Başvurusu",
+        "date": "2026-05-20",
+        "description": "Ajan tarafından tespit edildi."
+    }
+
+class ExecuteTaskRequest(BaseModel):
+    task_id: int
+    action: str
+    task_title: Optional[str] = "Bilinmeyen Görev"
+
+@app.post("/api/execute-task")
+async def execute_task(req: ExecuteTaskRequest):
+    """
+    Frontend'den gelen mock task onayını alır ve konsola yazdırır.
+    """
+    if req.action == "calendar_event":
+        basarisiz_mesaj = f"BAŞARILI: '{req.task_title}' Google Takvim'e ekleniyor..."
+        logger.info(basarisiz_mesaj)
+        print(basarisiz_mesaj) # Geliştirici terminalde de net görsün
+        return {"status": "success", "message": basarisiz_mesaj}
+    
+    return {"status": "error", "message": "Geçersiz action."}
 
 if __name__ == "__main__":
     import uvicorn
