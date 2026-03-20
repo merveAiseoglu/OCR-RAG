@@ -27,6 +27,11 @@ import uuid
 import shutil
 import numpy as np # Resim işleme için
 import cv2 # OpenCV
+import datetime
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
 
 # --- OPENAI ENTEGRASYONU ---
 from openai import OpenAI
@@ -449,6 +454,33 @@ async def get_mock_task():
         "description": "Ajan tarafından tespit edildi."
     }
 
+# --- GOOGLE CALENDAR ENTEGRASYONU ---
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+
+def get_calendar_service():
+    """Google Calendar API'sine erişim sağlamak için kimlik doğrulaması yapar ve servisi döndürür."""
+    creds = None
+    # Kullanıcının daha önceden aldığı izni saklayan dosya
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    
+    # Eğer geçerli bir izin yoksa (ilk defa ya da süresi dolmuşsa) kullanıcıdan iste
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            # credentials.json dosyası ana dizinde olmalıdır
+            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        
+        # Yeni alınan izni token.json dosyasına kaydet
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    # Takvim servisini oluştur ve döndür
+    service = build('calendar', 'v3', credentials=creds)
+    return service
+
 class ExecuteTaskRequest(BaseModel):
     task_id: int
     action: str
@@ -457,13 +489,46 @@ class ExecuteTaskRequest(BaseModel):
 @app.post("/api/execute-task")
 async def execute_task(req: ExecuteTaskRequest):
     """
-    Frontend'den gelen mock task onayını alır ve konsola yazdırır.
+    Frontend'den gelen mock task onayını alır ve Google Takvim'e ekler.
     """
     if req.action == "calendar_event":
         basarisiz_mesaj = f"BAŞARILI: '{req.task_title}' Google Takvim'e ekleniyor..."
         logger.info(basarisiz_mesaj)
         print(basarisiz_mesaj) # Geliştirici terminalde de net görsün
-        return {"status": "success", "message": basarisiz_mesaj}
+        
+        try:
+            service = get_calendar_service()
+            # Etkinlik için örnek bir zaman belirliyoruz (Şu andan 1 saat sonrası)
+            now = datetime.datetime.now()
+            start_time = now + datetime.timedelta(hours=1)
+            end_time = start_time + datetime.timedelta(hours=1)
+            
+            event = {
+                'summary': req.task_title,
+                'description': 'AI Asistan tarafından uygulamanız aracılığıyla eklendi.',
+                'start': {
+                    'dateTime': start_time.isoformat() + '+03:00',
+                    'timeZone': 'Europe/Istanbul',
+                },
+                'end': {
+                    'dateTime': end_time.isoformat() + '+03:00',
+                    'timeZone': 'Europe/Istanbul',
+                },
+            }
+            
+            # Google Calendar API üzerinden etkinliği ekle
+            # calendarId='primary' kullanıcının ana takvimini ifade eder.
+            event_result = service.events().insert(calendarId='primary', body=event).execute()
+            logger.info(f"Takvim etkinliği başarıyla oluşturuldu: {event_result.get('htmlLink')}")
+            
+            return {
+                "status": "success", 
+                "message": f"{basarisiz_mesaj} Etkinlik başarıyla oluşturuldu!",
+                "event_link": event_result.get('htmlLink')
+            }
+        except Exception as e:
+            logger.error(f"Google Calendar API Hatası: {e}")
+            return {"status": "error", "message": f"Takvime eklenirken hata oluştu: {str(e)}"}
     
     return {"status": "error", "message": "Geçersiz action."}
 

@@ -13,3 +13,8 @@ app.log
 # İşlenmiş Çıktılar (İsteğe bağlı)
 processed_documents.json
 processed_files_log.json
+
+
+# Google Takvim Api
+credentials.json
+token.json
