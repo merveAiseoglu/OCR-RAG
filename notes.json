@@ -1,0 +1,77 @@
+[
+    {
+        "id": "21560fa4-582c-4b3f-9669-4c73beae3835",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T19:51:17.156991"
+    },
+    {
+        "id": "6efa27f5-1549-4678-947e-6fdcabc374e5",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T19:51:23.663255"
+    },
+    {
+        "id": "e758c8f6-957f-4097-b393-5e34bf013b17",
+        "content": "Belgede, \"Proje Planlama Toplantısı\" adı altında bir toplantının detayları verilmiştir. Toplantı 25 Mart 2026 tarihinde, saat 14.30 ile 15.30 arasında, Zoom üzerinden online olarak gerçekleştirilecektir. Gündem maddeleri arasında:\n\n1. **TR-DocuQuery Mobil Entegrasyonu**: Enes, React Native tarafındaki API bağlantılarını 28 Mart'a kadar tamamlayacak.\n2. **Sunum Hazırlığı**: Proje sunumu için kullanılacak slaytlar Merve tarafından hazırlanacak.\n3. **Hata Ayıklama**: Backend tarafındaki token.json çakışmaları Fatıma tarafından giderilecek.\n\nÖnemli notlar kısmında, gelecek hafta Pazartesi günü (30 Mart) saat 10.00'da genel bir kod gözden geçirme (Code Review) yapılacağı belirtilmiştir. Ayrıca, aksiyon olarak tüm ekibin \"credentials.json\" dosyalarını özel kanaldan temin etmesi gerektiği vurgulanmıştır.",
+        "timestamp": "2026-03-24T19:51:23.974116"
+    },
+    {
+        "id": "fd66dbde-4757-4350-90a9-a61bb323238e",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T19:57:08.042336"
+    },
+    {
+        "id": "89e12731-8682-424b-bbb4-f06f9cd52988",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T19:57:48.637826"
+    },
+    {
+        "id": "a66e0296-0d6c-46c6-84ac-ddebbedb34e0",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T20:08:03.700577"
+    },
+    {
+        "id": "7b6befdc-8a35-422e-914e-5b52916d969f",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T20:09:00.535733"
+    },
+    {
+        "id": "3c2369b8-3c12-4909-86e7-1e7b621fa170",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T20:15:09.576332"
+    },
+    {
+        "id": "64f187a3-5a50-4ea2-86dc-3bd33359b89c",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T20:20:46.141698"
+    },
+    {
+        "id": "285e4e60-23a8-46e1-8a3c-c335b78d1356",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T20:26:51.106542"
+    },
+    {
+        "id": "d6dc66e8-5de5-435b-bd56-ee46e5ade034",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T20:59:20.772336"
+    },
+    {
+        "id": "513a627e-9f37-4295-bfa0-6d4a4838669d",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T20:59:46.573751"
+    },
+    {
+        "id": "96bb5373-fc4e-44bb-ba63-0304e2c6fc15",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T21:01:18.403979"
+    },
+    {
+        "id": "b6e36d0f-8bfd-49ba-8bbb-0e7a64c55fe8",
+        "content": "24.03.2026",
+        "timestamp": "2026-03-24T21:02:25.730386"
+    },
+    {
+        "id": "5d894166-c188-4ed1-af8f-b9fb62408048",
+        "content": "Merhaba",
+        "timestamp": "2026-03-24T21:05:32.675610"
+    }
+]

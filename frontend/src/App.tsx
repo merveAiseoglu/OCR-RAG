@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Upload, Camera, FileText, Loader2, CheckCircle, XCircle, Menu, X, MessageSquare, Trash2 } from 'lucide-react';
+import { Search, Upload, Camera, FileText, Loader2, CheckCircle, XCircle, Menu, X, MessageSquare, Trash2, StickyNote } from 'lucide-react';
 import axios from 'axios';
 import { ProactiveNotification } from './components/ProactiveNotification';
 import { ActionModal } from './components/ActionModal';
+import { NotesDrawer } from './components/NotesDrawer';
 
 const API_URL = 'http://localhost:8000';
 
@@ -43,6 +44,7 @@ function App() {
 
   // --- YENİ: Sidebar ve Geçmiş State'leri ---
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isNotesOpen, setIsNotesOpen] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
 
   // --- YENİ: Action Modal State'leri ---
@@ -227,8 +229,38 @@ function App() {
     }
   };
 
+  // --- YENİ: Not Kaydetme Fonksiyonu ---
+  const [noteFeedback, setNoteFeedback] = useState<{message: string, type: 'success' | 'error'} | null>(null);
+
+  const handleSaveNote = async (text: string) => {
+    if (!text || !text.trim()) {
+      setNoteFeedback({ message: 'Not içeriği boş olamaz!', type: 'error' });
+      setTimeout(() => setNoteFeedback(null), 3000);
+      return;
+    }
+    
+    try {
+      await axios.post(`${API_URL}/api/notes`, { content: text.trim() });
+      setNoteFeedback({ message: 'Not başarıyla kaydedildi!', type: 'success' });
+    } catch (error: any) {
+      setNoteFeedback({ 
+        message: error.response?.data?.detail || 'Not kaydedilirken bir hata oluştu.', 
+        type: 'error' 
+      });
+    } finally {
+      setTimeout(() => setNoteFeedback(null), 3000);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-600 via-purple-700 to-indigo-800 p-4 md:p-8 relative">
+      {/* Toast Bildirimi */}
+      {noteFeedback && (
+        <div className={`fixed top-6 left-1/2 transform -translate-x-1/2 z-[200] px-6 py-3 rounded-lg shadow-xl flex items-center gap-2 ${noteFeedback.type === 'success' ? 'bg-green-100 text-green-800 border border-green-200' : 'bg-red-100 text-red-800 border border-red-200'} transition-all animate-in fade-in slide-in-from-top-10`}>
+          {noteFeedback.type === 'success' ? <CheckCircle className="w-5 h-5" /> : <XCircle className="w-5 h-5" />}
+          <span className="font-semibold">{noteFeedback.message}</span>
+        </div>
+      )}
       <ProactiveNotification />
       <ActionModal
         isOpen={modalOpen}
@@ -282,9 +314,19 @@ function App() {
                   {isTaskActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : '📅 Takvime Ekle'}
                 </button>
                 <button 
+                  onClick={() => {
+                    handleSaveNote(mockTask.description);
+                    setMockTask(null);
+                  }}
+                  disabled={isTaskActionLoading}
+                  className="flex-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 text-xs font-bold py-2.5 px-2 rounded-lg transition-colors flex items-center justify-center gap-1 disabled:opacity-70 shadow-sm"
+                >
+                  📝 Nota Ekle
+                </button>
+                <button 
                   onClick={() => setMockTask(null)}
                   disabled={isTaskActionLoading}
-                  className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold py-2.5 px-4 rounded-lg transition-colors disabled:opacity-70"
+                  className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold py-2.5 px-3 rounded-lg transition-colors disabled:opacity-70"
                 >
                   Yoksay
                 </button>
@@ -364,8 +406,16 @@ function App() {
 
           <div className="text-center">
             <h1 className="text-3xl md:text-4xl font-bold mb-2">TR-DocuQuery</h1>
-
           </div>
+
+          {/* Notes Butonu */}
+          <button
+            onClick={() => setIsNotesOpen(true)}
+            className="absolute right-6 top-1/2 transform -translate-y-1/2 p-2 rounded-full hover:bg-white/20 transition-colors"
+            title="Notlarım"
+          >
+            <StickyNote className="w-8 h-8 text-white" />
+          </button>
         </div>
 
         <div className="flex border-b border-gray-200">
@@ -402,6 +452,13 @@ function App() {
                 <div className="bg-purple-50 border-l-4 border-purple-500 p-6 rounded-lg animate-in fade-in duration-300">
                   <h3 className="text-purple-700 font-bold text-lg mb-3">💡 Cevap:</h3>
                   <p className="text-gray-800 mb-4 whitespace-pre-wrap">{soruResponse.cevap}</p>
+
+                  <button
+                    onClick={() => handleSaveNote(soruResponse.cevap)}
+                    className="mb-4 bg-yellow-100 text-yellow-800 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-yellow-200 transition-colors flex items-center w-max shadow-sm"
+                  >
+                    📝 Notlara Kaydet
+                  </button>
 
                   {/* YENİ: MOCK AKSİYON BUTONLARI */}
                   <div className="flex space-x-2 mb-4">
@@ -459,7 +516,17 @@ function App() {
               <button onClick={handleFotoAnaliz} disabled={fotoLoading} className="w-full bg-indigo-600 text-white py-3 rounded-lg flex justify-center items-center">
                 {fotoLoading ? <Loader2 className="animate-spin mr-2" /> : <Search className="mr-2" />} Analiz Et
               </button>
-              {fotoResponse && <div className="bg-purple-50 p-6 rounded-lg mt-4"><p>{fotoResponse.cevap}</p></div>}
+              {fotoResponse && (
+                <div className="bg-purple-50 p-6 rounded-lg mt-4 shadow-sm border border-purple-100">
+                  <p className="mb-4 whitespace-pre-wrap text-gray-800">{fotoResponse.cevap}</p>
+                  <button
+                    onClick={() => handleSaveNote(fotoResponse.cevap)}
+                    className="bg-yellow-100 text-yellow-800 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-yellow-200 transition-colors flex items-center w-max shadow-sm"
+                  >
+                    📝 Notlara Kaydet
+                  </button>
+                </div>
+              )}
               {fotoError && <p className="text-red-500">{fotoError}</p>}
             </div>
           )}
@@ -482,6 +549,8 @@ function App() {
           )}
         </div>
       </div>
+
+      <NotesDrawer isOpen={isNotesOpen} onClose={() => setIsNotesOpen(false)} />
     </div>
   );
 }

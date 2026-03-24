@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Union, cast
 import time
 import logging
+import json
 import re
 import math
 import io
@@ -403,6 +404,83 @@ async def foto_analiz(file: UploadFile = File(...), soru: str = Form("Bu belgede
     except Exception as e:
         logger.error(f"Fotoğraf Analiz Hatası: {e}")
         raise HTTPException(500, f"İşlem başarısız: {str(e)}")
+
+# --- NOT YÖNETİMİ ---
+NOTES_FILE = "notes.json"
+
+class NoteCreate(BaseModel):
+    content: str
+
+@app.get("/api/notes")
+async def get_notes():
+    if not os.path.exists(NOTES_FILE):
+        return []
+    try:
+        async with aiofiles.open(NOTES_FILE, mode='r', encoding='utf-8') as f:
+            content = await f.read()
+            if not content.strip():
+                return []
+            return json.loads(content)
+    except Exception as e:
+        logger.error(f"Notları okurken hata: {e}")
+        return []
+
+@app.post("/api/notes")
+async def create_note(note: NoteCreate):
+    notes = []
+    if os.path.exists(NOTES_FILE):
+        try:
+            async with aiofiles.open(NOTES_FILE, mode='r', encoding='utf-8') as f:
+                content = await f.read()
+                if content.strip():
+                    notes = json.loads(content)
+        except Exception as e:
+            logger.error(f"Notları okurken hata (ekleme öncesi): {e}")
+            raise HTTPException(status_code=500, detail="Mevcut notlar okunamadı.")
+            
+    new_note = {
+        "id": str(uuid.uuid4()),
+        "content": note.content,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+    notes.append(new_note)
+    
+    try:
+        async with aiofiles.open(NOTES_FILE, mode='w', encoding='utf-8') as f:
+            await f.write(json.dumps(notes, ensure_ascii=False, indent=4))
+        return new_note
+    except Exception as e:
+        logger.error(f"Not yazma hatası: {e}")
+        raise HTTPException(status_code=500, detail=f"Dosyaya yazma hatası: Not kaydedilemedi ({str(e)}).")
+
+@app.delete("/api/notes/{note_id}")
+async def delete_note(note_id: str):
+    if not os.path.exists(NOTES_FILE):
+        raise HTTPException(status_code=404, detail="Not bulunamadı.")
+        
+    try:
+        async with aiofiles.open(NOTES_FILE, mode='r', encoding='utf-8') as f:
+            content = await f.read()
+            if not content.strip():
+                raise HTTPException(status_code=404, detail="Not bulunamadı.")
+            notes = json.loads(content)
+            
+        initial_length = len(notes)
+        notes = [n for n in notes if n.get("id") != note_id]
+        
+        if len(notes) == initial_length:
+            raise HTTPException(status_code=404, detail="Not bulunamadı.")
+            
+        async with aiofiles.open(NOTES_FILE, mode='w', encoding='utf-8') as f:
+            await f.write(json.dumps(notes, ensure_ascii=False, indent=4))
+            
+        return {"success": True, "detail": "Not başarıyla silindi."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Not silme hatası: {e}")
+        raise HTTPException(status_code=500, detail=f"Not silinirken hata oluştu: ({str(e)}).")
 
 # --- MOCK API ENDPOINTS (3. ve 4. Geliştirici İçin) ---
 @app.get("/api/agent/proactive-search")
