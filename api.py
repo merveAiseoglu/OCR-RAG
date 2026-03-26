@@ -1,11 +1,3 @@
-"""
-OCR RAG API v3.9 - Final Tam Sürüm
-Özellikler:
-1. OpenAI (ChatGPT) Entegrasyonu
-2. PDF RAG Sistemi (Vektör Arama)
-3. Fotoğraf Analizi (OpenCV + EasyOCR + GPT) -> EKLENDİ
-"""
-
 import os
 from dotenv import load_dotenv
 
@@ -509,28 +501,6 @@ async def add_to_calendar(data: dict):
     tarih = data.get("tarih", "Bilinmeyen Tarih")
     logger.info(f"📅 Google Takvim'e eklendi: {baslik} - {tarih}")
     return {"status": "success", "message": f"'{baslik}' isimli etkinlik Google Takvim'e eklendi!"}
-
-@app.post("/api/action/tasks/add")
-async def add_to_tasks(data: dict):
-    """
-    Kullanıcının onayladığı bir iş paketini Google Tasks'e (To Do) eklemiş gibi simüle eder.
-    Beklenen data formatı: {"gorev": "Şartnameyi oku", "bitis_tarihi": "2024-06-15"}
-    """
-    gorev = data.get("gorev", "Bilinmeyen Görev")
-    logger.info(f"✅ Google Tasks'e eklendi: {gorev}")
-    return {"status": "success", "message": f"'{gorev}' isimli görev Google Tasks'e eklendi!"}
-
-@app.get("/api/mock-task")
-async def get_mock_task():
-    """
-    Frontend entegrasyonu için örnek bir task döndürür.
-    """
-    return {
-        "id": 1,
-        "title": "TÜBİTAK Yarışma Başvurusu",
-        "date": "2026-05-20",
-        "description": "Ajan tarafından tespit edildi."
-    }
 
 # --- GOOGLE CALENDAR ENTEGRASYONU ---
 SCOPES = ['https://www.googleapis.com/auth/calendar']

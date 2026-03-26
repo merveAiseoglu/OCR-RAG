@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Upload, Camera, FileText, Loader2, CheckCircle, XCircle, Menu, X, MessageSquare, Trash2, StickyNote } from 'lucide-react';
+import { Search, Upload, Camera, FileText, Loader2, CheckCircle, XCircle, Menu, X, MessageSquare, Trash2, StickyNote, Bot, Sparkles } from 'lucide-react';
 import axios from 'axios';
 import { ProactiveNotification } from './components/ProactiveNotification';
 import { ActionModal } from './components/ActionModal';
@@ -27,6 +27,11 @@ interface UploadResponse {
 interface OCRResponse {
   cevap: string;
   okunan_ham_veri: string;
+}
+
+// --- YENİ: Ajan Rapor İçim Tip Tanımı ---
+interface AgentResponse {
+  asistan_raporu: string | null;
 }
 
 // --- YENİ: Geçmiş Kaydı İçin Tip Tanımı ---
@@ -58,6 +63,9 @@ function App() {
   const [isTaskActionLoading, setIsTaskActionLoading] = useState(false);
   const [taskSuccessMessage, setTaskSuccessMessage] = useState('');
 
+  // --- YENİ: Ajan Proaktif Bildirim State ---
+  const [asistanRaporu, setAsistanRaporu] = useState<any | null>(null);
+
   // State
   const [soru, setSoru] = useState('');
   const [soruLoading, setSoruLoading] = useState(false);
@@ -82,22 +90,17 @@ function App() {
       setHistory(JSON.parse(savedHistory));
     }
 
-    // YENİ: Mock task çekme işlemi
-    const fetchMockTask = async () => {
-      try {
-        const response = await axios.get(`${API_URL}/api/mock-task`);
-        if (response.data && response.data.title) {
-          setMockTask(response.data);
-        }
-      } catch (e) {
-        console.error("Mock task fetch hatası", e);
-      }
-    };
-
-    // UI yüklendikten 1.5 saniye sonra bildirimi göster
-    setTimeout(fetchMockTask, 1500);
+    // Backend'de "/api/mock-task" endpoint'i olmadığı için mock task çekme işlemi geçici olarak silindi (404 Hatası çözümü).
 
   }, []);
+
+  // --- YENİ: Ajan Raporunu 5 Saniye Sonra Gizleme ---
+  useEffect(() => {
+    if (asistanRaporu) {
+      const timer = setTimeout(() => setAsistanRaporu(null), 5000);
+      return () => clearTimeout(timer); // Cleanup
+    }
+  }, [asistanRaporu]);
 
   // --- YENİ: Geçmişe Kaydetme Fonksiyonu ---
   const saveToHistory = (soruText: string, resp: QueryResponse) => {
@@ -139,6 +142,26 @@ function App() {
     setSoruResponse(null);
     setSoruError('');
     setSoruLoading(true);
+    setAsistanRaporu(null); // Bildirimi sıfırla
+
+    // --- YENİ: Ajan Analizi Fonksiyonu (Non-blocking) ---
+    const triggerProactiveSearch = async (soruMetni: string) => {
+      try {
+        const resp = await axios.post('http://10.114.10.152:8001/agent/proactive-search', { 
+          sohbet_gecmisi: [soruMetni] 
+        });
+        
+        const sonuc = resp.data.arama_sonuclari || resp.data.rapor;
+        if (sonuc) {
+          setAsistanRaporu(sonuc);
+        }
+      } catch (e) {
+        console.error("Proaktif arama hatası:", e);
+      }
+    };
+
+    // Fonksiyonu asenkron yapıda çalışmaya bırakıyoruz (Görünmez arka plan)
+    triggerProactiveSearch(soru.trim());
 
     try {
       const response = await axios.post<QueryResponse>(`${API_URL}/sor`, {
@@ -230,7 +253,7 @@ function App() {
   };
 
   // --- YENİ: Not Kaydetme Fonksiyonu ---
-  const [noteFeedback, setNoteFeedback] = useState<{message: string, type: 'success' | 'error'} | null>(null);
+  const [noteFeedback, setNoteFeedback] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
 
   const handleSaveNote = async (text: string) => {
     if (!text || !text.trim()) {
@@ -238,14 +261,14 @@ function App() {
       setTimeout(() => setNoteFeedback(null), 3000);
       return;
     }
-    
+
     try {
       await axios.post(`${API_URL}/api/notes`, { content: text.trim() });
       setNoteFeedback({ message: 'Not başarıyla kaydedildi!', type: 'success' });
     } catch (error: any) {
-      setNoteFeedback({ 
-        message: error.response?.data?.detail || 'Not kaydedilirken bir hata oluştu.', 
-        type: 'error' 
+      setNoteFeedback({
+        message: error.response?.data?.detail || 'Not kaydedilirken bir hata oluştu.',
+        type: 'error'
       });
     } finally {
       setTimeout(() => setNoteFeedback(null), 3000);
@@ -261,6 +284,53 @@ function App() {
           <span className="font-semibold">{noteFeedback.message}</span>
         </div>
       )}
+
+      {/* --- YENİ: Proaktif AI Ajan Bildirim Toast'u --- */}
+      {asistanRaporu && (
+        <div className="fixed top-6 right-6 z-[150] w-80 bg-white/90 backdrop-blur-md text-gray-800 rounded-xl shadow-2xl p-5 transform transition-all animate-in slide-in-from-right-8 zoom-in-95 ease-out duration-300 border border-gray-100">
+          <div className="flex justify-between items-start mb-3 border-b border-gray-100 pb-2">
+            <h3 className="font-bold flex items-center text-indigo-700 text-sm">
+              <Sparkles className="w-5 h-5 mr-2 text-indigo-500 animate-pulse" /> Ajan Raporu
+            </h3>
+            <button onClick={() => setAsistanRaporu(null)} className="text-gray-400 hover:text-red-500 transition-colors rounded-full p-1 bg-gray-50 hover:bg-red-50" title="Kapat">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="text-sm leading-relaxed mb-4 text-gray-700 font-medium flex flex-col gap-2">
+            {asistanRaporu && typeof asistanRaporu === 'object' ? (
+              Object.entries(asistanRaporu).map(([key, value]) => (
+                <div key={key}>
+                  <strong className="block text-indigo-700">{key}:</strong>
+                  <p>{String(value)}</p>
+                </div>
+              ))
+            ) : (
+              <p>{String(asistanRaporu || '')}</p>
+            )}
+          </div>
+          <div className="flex justify-between items-center mt-2 pt-2 border-t border-gray-100">
+             <button 
+              onClick={() => {
+                const noteText = asistanRaporu && typeof asistanRaporu === 'object'
+                  ? Object.entries(asistanRaporu).map(([k, v]) => `${k}: ${v}`).join('\n')
+                  : String(asistanRaporu || '');
+                handleSaveNote(noteText);
+                setAsistanRaporu(null);
+              }} 
+              className="text-xs flex items-center text-indigo-600 hover:text-indigo-800 font-semibold transition-colors"
+            >
+              <StickyNote className="w-4 h-4 mr-1" /> Notlara Kaydet
+            </button>
+            <button
+              onClick={() => setAsistanRaporu(null)}
+              className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-600 font-semibold py-1.5 px-3 rounded-lg transition-colors"
+            >
+              Kapat
+            </button>
+          </div>
+        </div>
+      )}
+
       <ProactiveNotification />
       <ActionModal
         isOpen={modalOpen}
@@ -279,7 +349,7 @@ function App() {
               Yeni Etkinlik Bulundu: {mockTask.title}
             </h3>
             <button onClick={() => setMockTask(null)} className="text-gray-400 hover:text-red-500 transition-colors ml-2 shrink-0">
-               <X className="w-5 h-5" />
+              <X className="w-5 h-5" />
             </button>
           </div>
           <div>
@@ -288,7 +358,7 @@ function App() {
           <div className="flex space-x-2 mt-2">
             {!taskSuccessMessage ? (
               <>
-                <button 
+                <button
                   onClick={async () => {
                     setIsTaskActionLoading(true);
                     try {
@@ -307,13 +377,13 @@ function App() {
                     } finally {
                       setIsTaskActionLoading(false);
                     }
-                  }} 
+                  }}
                   disabled={isTaskActionLoading}
                   className="flex-1 bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold py-2.5 px-4 rounded-lg transition-colors flex items-center justify-center gap-1 disabled:opacity-70"
                 >
                   {isTaskActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : '📅 Takvime Ekle'}
                 </button>
-                <button 
+                <button
                   onClick={() => {
                     handleSaveNote(mockTask.description);
                     setMockTask(null);
@@ -323,7 +393,7 @@ function App() {
                 >
                   📝 Nota Ekle
                 </button>
-                <button 
+                <button
                   onClick={() => setMockTask(null)}
                   disabled={isTaskActionLoading}
                   className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold py-2.5 px-3 rounded-lg transition-colors disabled:opacity-70"
