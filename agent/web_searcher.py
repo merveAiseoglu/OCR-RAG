@@ -67,3 +67,21 @@ if __name__ == "__main__":
         print(f"\n[İlgi Alanı]: {ilgi_alani}")
         print(f"[Özet]:\n{sonuc}")
         print("-" * 50)
+
+# --- CLASS YAPISI (Seçenek 2'ye Uygun) ---
+class WebSearcher:
+    def __init__(self):
+        from langchain_community.tools import DuckDuckGoSearchRun
+        self.search_tool = DuckDuckGoSearchRun()
+
+    def search(self, query: str) -> str:
+        """
+        Gelen sorguyu DuckDuckGo ile arar ve özetleyip döndürür.
+        """
+        try:
+            raw_result = self.search_tool.invoke(query)
+            # LLM yardımı ile sonucu akıcı özetliyoruz:
+            summary = sonucu_duzenle(query, raw_result)
+            return summary
+        except Exception as e:
+            return f"{query} için arama yapılamadı: {str(e)}"

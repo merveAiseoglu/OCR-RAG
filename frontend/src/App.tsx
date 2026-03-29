@@ -58,8 +58,8 @@ function App() {
   const [modalType, setModalType] = useState<'calendar' | 'tasks'>('calendar');
   const [modalData, setModalData] = useState<any>({});
 
-  // --- YENİ: Mock Task State ---
-  const [mockTask, setMockTask] = useState<any>(null);
+  // --- YENİ: AI Proaktif Bildirim State'leri (Polling ile Dolacak) ---
+  const [proactiveFindings, setProactiveFindings] = useState<any[]>([]);
   const [isTaskActionLoading, setIsTaskActionLoading] = useState(false);
   const [taskSuccessMessage, setTaskSuccessMessage] = useState('');
 
@@ -90,8 +90,25 @@ function App() {
       setHistory(JSON.parse(savedHistory));
     }
 
-    // Backend'de "/api/mock-task" endpoint'i olmadığı için mock task çekme işlemi geçici olarak silindi (404 Hatası çözümü).
+    // 60 saniyede bir yeni bildirim var mı diye kontrol et (Proaktif Ajan Polling)
+    const checkProactive = async () => {
+      try {
+        const response = await axios.get(`${API_URL}/api/agent/proactive-search`);
+        if (response.data && response.data.bulunanlar && response.data.bulunanlar.length > 0) {
+          // Yeni gelen bulguları mevcut bulgulara ekleyebilir veya tamamen üstüne yazabiliriz.
+          // Üzerine yazmak şimdilik uygun (her defasında güncel bulgular dönecektir diye varsayıyoruz)
+          setProactiveFindings(response.data.bulunanlar);
+        }
+      } catch (error) {
+        console.error("Proaktif arama hatası:", error);
+      }
+    };
 
+    // Uygulama açıldığında bir kez çalıştır
+    checkProactive();
+    // 60 saniyede bir polling yap
+    const interval = setInterval(checkProactive, 60000);
+    return () => clearInterval(interval);
   }, []);
 
   // --- YENİ: Ajan Raporunu 5 Saniye Sonra Gizleme ---
@@ -147,10 +164,10 @@ function App() {
     // --- YENİ: Ajan Analizi Fonksiyonu (Non-blocking) ---
     const triggerProactiveSearch = async (soruMetni: string) => {
       try {
-        const resp = await axios.post('http://10.114.10.152:8001/agent/proactive-search', { 
-          sohbet_gecmisi: [soruMetni] 
+        const resp = await axios.post('http://10.114.10.152:8001/agent/proactive-search', {
+          sohbet_gecmisi: [soruMetni]
         });
-        
+
         const sonuc = resp.data.arama_sonuclari || resp.data.rapor;
         if (sonuc) {
           setAsistanRaporu(sonuc);
@@ -309,14 +326,14 @@ function App() {
             )}
           </div>
           <div className="flex justify-between items-center mt-2 pt-2 border-t border-gray-100">
-             <button 
+            <button
               onClick={() => {
                 const noteText = asistanRaporu && typeof asistanRaporu === 'object'
                   ? Object.entries(asistanRaporu).map(([k, v]) => `${k}: ${v}`).join('\n')
                   : String(asistanRaporu || '');
                 handleSaveNote(noteText);
                 setAsistanRaporu(null);
-              }} 
+              }}
               className="text-xs flex items-center text-indigo-600 hover:text-indigo-800 font-semibold transition-colors"
             >
               <StickyNote className="w-4 h-4 mr-1" /> Notlara Kaydet
@@ -331,7 +348,8 @@ function App() {
         </div>
       )}
 
-      <ProactiveNotification />
+      {/* Kaldırıldı: Eski `<ProactiveNotification />` bileşeni, artık alttaki şık AI Notification Card kullanılıyor */}
+
       <ActionModal
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
@@ -340,20 +358,21 @@ function App() {
         data={modalData}
       />
 
-      {/* --- YENİ: AI Notification Card --- */}
-      {mockTask && (
+      {/* --- YENİ: AI Notification Card (Gerçek Veri) --- */}
+      {proactiveFindings.length > 0 && (
         <div className="fixed bottom-6 right-6 bg-white rounded-xl shadow-2xl border-l-4 border-indigo-500 p-5 w-80 z-[100] transform transition-all duration-500 ease-out translate-y-0 opacity-100 flex flex-col gap-2">
           <div className="flex justify-between items-start mb-2">
             <h3 className="font-bold text-indigo-700 text-sm flex items-center gap-2 leading-tight">
               <span className="bg-indigo-100 text-indigo-800 p-1.5 rounded-full"><MessageSquare className="w-3.5 h-3.5" /></span>
-              Yeni Etkinlik Bulundu: {mockTask.title}
+              Ajan Yeni Yükleme Yaptı
             </h3>
-            <button onClick={() => setMockTask(null)} className="text-gray-400 hover:text-red-500 transition-colors ml-2 shrink-0">
+            <button onClick={() => setProactiveFindings(prev => prev.slice(1))} className="text-gray-400 hover:text-red-500 transition-colors ml-2 shrink-0">
               <X className="w-5 h-5" />
             </button>
           </div>
           <div>
-            <p className="text-xs text-gray-500 leading-relaxed">{mockTask.description} - {mockTask.date}</p>
+            <p className="text-xs text-gray-500 leading-relaxed font-medium">{proactiveFindings[0].mesaj}</p>
+            <p className="text-xs text-gray-400 mt-1">{proactiveFindings[0].tarih}</p>
           </div>
           <div className="flex space-x-2 mt-2">
             {!taskSuccessMessage ? (
@@ -362,14 +381,14 @@ function App() {
                   onClick={async () => {
                     setIsTaskActionLoading(true);
                     try {
-                      await axios.post(`${API_URL}/api/execute-task`, {
-                        task_id: mockTask.id,
+                      await axios.post(`${API_URL}/api/takvime-ekle`, {
+                        task_id: proactiveFindings[0].id,
                         action: "calendar_event",
-                        task_title: mockTask.title
+                        task_title: proactiveFindings[0].mesaj.substring(0, 30) // Başlığın ilk 30 karakteri
                       });
                       setTaskSuccessMessage('Takvime başarıyla eklendi!');
                       setTimeout(() => {
-                        setMockTask(null);
+                        setProactiveFindings(prev => prev.slice(1)); // Bu bildirimi kaldır
                         setTaskSuccessMessage('');
                       }, 2000);
                     } catch (e) {
@@ -381,20 +400,20 @@ function App() {
                   disabled={isTaskActionLoading}
                   className="flex-1 bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold py-2.5 px-4 rounded-lg transition-colors flex items-center justify-center gap-1 disabled:opacity-70"
                 >
-                  {isTaskActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : '📅 Takvime Ekle'}
+                  {isTaskActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : '📅 Ekle'}
                 </button>
                 <button
                   onClick={() => {
-                    handleSaveNote(mockTask.description);
-                    setMockTask(null);
+                    handleSaveNote(`${proactiveFindings[0].mesaj} - ${proactiveFindings[0].tarih}`);
+                    setProactiveFindings(prev => prev.slice(1));
                   }}
                   disabled={isTaskActionLoading}
                   className="flex-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 text-xs font-bold py-2.5 px-2 rounded-lg transition-colors flex items-center justify-center gap-1 disabled:opacity-70 shadow-sm"
                 >
-                  📝 Nota Ekle
+                  📝 Not Al
                 </button>
                 <button
-                  onClick={() => setMockTask(null)}
+                  onClick={() => setProactiveFindings(prev => prev.slice(1))}
                   disabled={isTaskActionLoading}
                   className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold py-2.5 px-3 rounded-lg transition-colors disabled:opacity-70"
                 >
@@ -530,29 +549,31 @@ function App() {
                     📝 Notlara Kaydet
                   </button>
 
-                  {/* YENİ: MOCK AKSİYON BUTONLARI */}
+                  {/* AKSİYON BUTONLARI */}
                   <div className="flex space-x-2 mb-4">
                     <button
                       onClick={() => {
-                        setModalTitle("Proje Teslimi");
+                        setModalTitle("Önerilen Etkinlik");
                         setModalType('calendar');
-                        setModalData({ baslik: "Proje Teslimi", tarih: "2024-06-15" });
+                        // Backendin güncel tarihi alabilmesi için basit bir format bırakıyoruz
+                        // Veya AI'dan gelen veriyi ileride buraya bağlayabilirsiniz.
+                        setModalData({ baslik: "Önerilen Etkinlik", tarih: "" });
                         setModalOpen(true);
                       }}
-                      className="bg-blue-100 text-blue-700 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-blue-200 transition-colors flex items-center"
+                      className="bg-blue-100 text-blue-700 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-blue-200 transition-colors flex items-center shadow-sm"
                     >
-                      📅 Takvime Ekle (Mock)
+                      📅 Takvime Ekle
                     </button>
                     <button
                       onClick={() => {
                         setModalTitle("Şartname İncelemesi");
                         setModalType('tasks');
-                        setModalData({ gorev: "Şartname İncelemesi", bitis_tarihi: "2024-06-15" });
+                        setModalData({ gorev: "Önerilen Görev", bitis_tarihi: "" });
                         setModalOpen(true);
                       }}
-                      className="bg-green-100 text-green-700 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-green-200 transition-colors flex items-center"
+                      className="bg-green-100 text-green-700 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-green-200 transition-colors flex items-center shadow-sm"
                     >
-                      ✅ Görevlere Ekle (Mock)
+                      ✅ Görevlere Ekle
                     </button>
                   </div>
 
@@ -589,12 +610,36 @@ function App() {
               {fotoResponse && (
                 <div className="bg-purple-50 p-6 rounded-lg mt-4 shadow-sm border border-purple-100">
                   <p className="mb-4 whitespace-pre-wrap text-gray-800">{fotoResponse.cevap}</p>
-                  <button
-                    onClick={() => handleSaveNote(fotoResponse.cevap)}
-                    className="bg-yellow-100 text-yellow-800 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-yellow-200 transition-colors flex items-center w-max shadow-sm"
-                  >
-                    📝 Notlara Kaydet
-                  </button>
+                  <div className="flex flex-wrap gap-2 mt-4">
+                    <button
+                      onClick={() => handleSaveNote(fotoResponse.cevap)}
+                      className="bg-yellow-100 text-yellow-800 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-yellow-200 transition-colors flex items-center w-max shadow-sm"
+                    >
+                      📝 Notlara Kaydet
+                    </button>
+                    <button
+                      onClick={() => {
+                        setModalTitle("Fotoğraf Analizi Etkinliği");
+                        setModalType('calendar');
+                        setModalData({ baslik: "Fotoğraf Analiz Sonucu", tarih: "" });
+                        setModalOpen(true);
+                      }}
+                      className="bg-blue-100 text-blue-700 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-blue-200 transition-colors flex items-center shadow-sm"
+                    >
+                      📅 Takvime Ekle
+                    </button>
+                    <button
+                      onClick={() => {
+                        setModalTitle("Analiz Görevi");
+                        setModalType('tasks');
+                        setModalData({ gorev: "Görüntü İçeriği İncelemesi", bitis_tarihi: "" });
+                        setModalOpen(true);
+                      }}
+                      className="bg-green-100 text-green-700 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-green-200 transition-colors flex items-center shadow-sm"
+                    >
+                      ✅ Görevlere Ekle
+                    </button>
+                  </div>
                 </div>
               )}
               {fotoError && <p className="text-red-500">{fotoError}</p>}

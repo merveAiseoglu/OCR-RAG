@@ -22,16 +22,34 @@ export function ActionModal({ isOpen, onClose, title, type, data }: ActionModalP
     setLoading(true);
     setSuccessMsg('');
     try {
-      const endpoint = type === 'calendar' ? '/api/action/calendar/add' : '/api/action/tasks/add';
-      const response = await axios.post(`${API_URL}${endpoint}`, data);
-      setSuccessMsg(response.data.message || 'İşlem başarılı!');
-      setTimeout(() => {
-        onClose();
-        setSuccessMsg('');
-      }, 2000);
-    } catch (error) {
+      if (type === 'calendar') {
+        const response = await axios.post(`${API_URL}/api/takvime-ekle`, {
+          task_id: "modal_" + Date.now().toString(),
+          action: "calendar_event",
+          task_title: data.baslik || title,
+          task_date: data.tarih || ""
+        });
+        
+        if (response.data && response.data.status === "error") {
+          alert(`Hata:\n${response.data.message}`);
+        } else {
+          setSuccessMsg('Takvime başarıyla eklendi!');
+          setTimeout(() => {
+            onClose();
+            setSuccessMsg('');
+          }, 2000);
+        }
+      } else {
+        const response = await axios.post(`${API_URL}/api/action/tasks/add`, data);
+        setSuccessMsg(response.data.message || 'Görev başarıyla eklendi!');
+        setTimeout(() => {
+          onClose();
+          setSuccessMsg('');
+        }, 2000);
+      }
+    } catch (error: any) {
       console.error("Aksiyon hatası:", error);
-      alert("Bir hata oluştu.");
+      alert(`Bir hata oluştu:\n${error.response?.data?.detail || error.message}`);
     } finally {
       setLoading(false);
     }

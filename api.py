@@ -26,6 +26,10 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+# --- AGENT ---
+from agent.web_searcher import WebSearcher
+from agent.task_extractor import TaskExtractor
+
 # --- OPENAI ENTEGRASYONU ---
 from openai import OpenAI
 
@@ -474,33 +478,66 @@ async def delete_note(note_id: str):
         logger.error(f"Not silme hatası: {e}")
         raise HTTPException(status_code=500, detail=f"Not silinirken hata oluştu: ({str(e)}).")
 
-# --- MOCK API ENDPOINTS (3. ve 4. Geliştirici İçin) ---
+# --- BİLDİRİM PANEL KISMI ---
 @app.get("/api/agent/proactive-search")
 async def check_proactive_findings():
     """
-    Arka planda (cron/background task) çalışan AI ajanının bulduğu sonuçları simüle eder.
+    GERÇEK: Merve'nin ajanı çalışır, bulduğu veriyi NOTLARA kaydeder ve bildirim döner.
     """
+    # 1. Merve'nin ajanlarını çalıştırıyoruz
+    searcher = WebSearcher()
+    raw_results = searcher.search("KPSS güncel tarihler 2026")
+    
+    extractor = TaskExtractor()
+    findings = extractor.extract(raw_results)
+
+    bulunanlar_listesi = []
+    
+    # --- NOTLARI YÜKLE (Eğer dosya yoksa boş liste oluştur) ---
+    notes_file = "notes.json"
+    if os.path.exists(notes_file):
+        with open(notes_file, "r", encoding="utf-8") as f:
+            try:
+                current_notes = json.load(f)
+            except:
+                current_notes = []
+    else:
+        current_notes = []
+
+    # 2. Bulguları işle ve Notlara ekle
+    for finding in findings:
+        item_id = uuid.uuid4().hex[:8]
+        mesaj_metni = f"{finding['title']} bulundu! 🚀 Senin için buldum 👋"
+        
+        # Frontend'e gidecek obje
+        new_entry = {
+            "id": item_id,
+            "mesaj": mesaj_metni,
+            "tarih": finding['date'],
+            "tip": "etkinlik"
+        }
+        bulunanlar_listesi.append(new_entry)
+
+        # --- AYNI NOT VAR MI KONTROL ET VE EKLE ---
+        # (Aynı mesajın tekrar tekrar notlara dolmaması için kontrol)
+        if not any(n.get('mesaj') == mesaj_metni for n in current_notes):
+            current_notes.append({
+                "id": item_id,
+                "content": mesaj_metni, # Senin not yapına göre 'content' veya 'mesaj' yapabilirsin
+                "date": finding['date'],
+                "type": "auto-agent"
+            })
+
+    # 3. Güncel notları dosyaya geri yaz
+    with open(notes_file, "w", encoding="utf-8") as f:
+        json.dump(current_notes, f, ensure_ascii=False, indent=4)
+
+    # 4. Senin hazırladığın bildirim iskeletine uygun formatı dön
     return {
-        "bulunanlar": [
-            {
-                "id": uuid.uuid4().hex[:8],
-                "mesaj": "TÜBİTAK 1512 BİGG Programı Başvuruları Açıldı! 🚀 Senin için buldum 👋",
-                "tarih": time.strftime("%Y-%m-%d"),
-                "tip": "hibe"
-            }
-        ]
+        "bulunanlar": bulunanlar_listesi
     }
 
-@app.post("/api/action/calendar/add")
-async def add_to_calendar(data: dict):
-    """
-    Kullanıcının onayladığı bir görevi/tarihi Google Takvim'e eklemiş gibi simüle eder.
-    Beklenen data formatı: {"baslik": "Proje Teslimi", "tarih": "2024-06-15"}
-    """
-    baslik = data.get("baslik", "Bilinmeyen Etkinlik")
-    tarih = data.get("tarih", "Bilinmeyen Tarih")
-    logger.info(f"📅 Google Takvim'e eklendi: {baslik} - {tarih}")
-    return {"status": "success", "message": f"'{baslik}' isimli etkinlik Google Takvim'e eklendi!"}
+
 
 # --- GOOGLE CALENDAR ENTEGRASYONU ---
 SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -530,11 +567,11 @@ def get_calendar_service():
     return service
 
 class ExecuteTaskRequest(BaseModel):
-    task_id: int
+    task_id: Union[int, str]
     action: str
     task_title: Optional[str] = "Bilinmeyen Görev"
 
-@app.post("/api/execute-task")
+@app.post("/api/takvime-ekle")
 async def execute_task(req: ExecuteTaskRequest):
     """
     Frontend'den gelen mock task onayını alır ve Google Takvim'e ekler.

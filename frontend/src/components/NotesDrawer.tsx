@@ -82,9 +82,8 @@ export const NotesDrawer: React.FC<NotesDrawerProps> = ({ isOpen, onClose }) => 
 
       {/* Drawer Panel */}
       <div
-        className={`fixed top-0 right-0 h-full w-80 sm:w-96 bg-gray-50 shadow-2xl z-50 transform transition-transform duration-300 ease-in-out flex flex-col ${
-          isOpen ? 'translate-x-0' : 'translate-x-full'
-        }`}
+        className={`fixed top-0 right-0 h-full w-80 sm:w-96 bg-gray-50 shadow-2xl z-50 transform transition-transform duration-300 ease-in-out flex flex-col ${isOpen ? 'translate-x-0' : 'translate-x-full'
+          }`}
       >
         <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-white shadow-sm">
           <h2 className="font-bold text-gray-800 flex items-center text-lg">
