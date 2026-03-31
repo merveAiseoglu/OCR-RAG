@@ -478,6 +478,39 @@ async def delete_note(note_id: str):
         logger.error(f"Not silme hatası: {e}")
         raise HTTPException(status_code=500, detail=f"Not silinirken hata oluştu: ({str(e)}).")
 
+@app.put("/api/notes/update/{note_id}")
+async def update_note(note_id: str, note: NoteCreate):
+    if not os.path.exists(NOTES_FILE):
+        raise HTTPException(status_code=404, detail="Not bulunamadı.")
+        
+    try:
+        async with aiofiles.open(NOTES_FILE, mode='r', encoding='utf-8') as f:
+            content = await f.read()
+            if not content.strip():
+                raise HTTPException(status_code=404, detail="Not bulunamadı.")
+            notes = json.loads(content)
+            
+        updated = False
+        for n in notes:
+            if n.get("id") == note_id:
+                n["content"] = note.content
+                updated = True
+                break
+                
+        if not updated:
+            raise HTTPException(status_code=404, detail="Not bulunamadı.")
+            
+        async with aiofiles.open(NOTES_FILE, mode='w', encoding='utf-8') as f:
+            await f.write(json.dumps(notes, ensure_ascii=False, indent=4))
+            
+        return {"success": True, "detail": "Not başarıyla güncellendi."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Not güncelleme hatası: {e}")
+        raise HTTPException(status_code=500, detail=f"Not güncellenirken hata oluştu: ({str(e)}).")
+
 # --- BİLDİRİM PANEL KISMI ---
 @app.get("/api/agent/proactive-search")
 async def check_proactive_findings():
@@ -570,11 +603,12 @@ class ExecuteTaskRequest(BaseModel):
     task_id: Union[int, str]
     action: str
     task_title: Optional[str] = "Bilinmeyen Görev"
+    task_date: Optional[str] = None
 
-@app.post("/api/takvime-ekle")
+@app.post("/api/action/calendar/add")
 async def execute_task(req: ExecuteTaskRequest):
     """
-    Frontend'den gelen mock task onayını alır ve Google Takvim'e ekler.
+    Frontend'den gelen task onayını alır ve dinamik tarihle Google Takvim'e ekler.
     """
     if req.action == "calendar_event":
         basarisiz_mesaj = f"BAŞARILI: '{req.task_title}' Google Takvim'e ekleniyor..."
@@ -583,10 +617,22 @@ async def execute_task(req: ExecuteTaskRequest):
         
         try:
             service = get_calendar_service()
-            # Etkinlik için örnek bir zaman belirliyoruz (Şu andan 1 saat sonrası)
+            
+            # Dinamik tarih ayarı
             now = datetime.datetime.now()
             start_time = now + datetime.timedelta(hours=1)
             end_time = start_time + datetime.timedelta(hours=1)
+            
+            if req.task_date:
+                try:
+                    selected_date = datetime.datetime.strptime(req.task_date, "%Y-%m-%d")
+                    # Eğer seçilen tarih bugün ise saati şimdiden 1 saat sonrası olarak bırak
+                    if selected_date.date() != now.date():
+                        # Geçmişte veya gelecekte başka bir günse saat 10:00'a etkinliği kur
+                        start_time = selected_date.replace(hour=10, minute=0, second=0)
+                        end_time = start_time + datetime.timedelta(hours=1)
+                except Exception as e:
+                    logger.warning(f"Geçersiz tarih formatı '{req.task_date}': {e}. Varsayılan saat kullanılacak.")
             
             event = {
                 'summary': req.task_title,

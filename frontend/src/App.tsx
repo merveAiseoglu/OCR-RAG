@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Upload, Camera, FileText, Loader2, CheckCircle, XCircle, Menu, X, MessageSquare, Trash2, StickyNote, Bot, Sparkles } from 'lucide-react';
+import { Search, Upload, Camera, FileText, Loader2, CheckCircle, XCircle, Menu, X, MessageSquare, Trash2, StickyNote, Sparkles } from 'lucide-react';
 import axios from 'axios';
-import { ProactiveNotification } from './components/ProactiveNotification';
 import { ActionModal } from './components/ActionModal';
 import { NotesDrawer } from './components/NotesDrawer';
 
@@ -29,11 +28,6 @@ interface OCRResponse {
   okunan_ham_veri: string;
 }
 
-// --- YENİ: Ajan Rapor İçim Tip Tanımı ---
-interface AgentResponse {
-  asistan_raporu: string | null;
-}
-
 // --- YENİ: Geçmiş Kaydı İçin Tip Tanımı ---
 interface HistoryItem {
   id: string;
@@ -41,6 +35,21 @@ interface HistoryItem {
   response: QueryResponse;
   timestamp: string;
 }
+
+// --- YENİ: Tarih Çıkarma Fonksiyonu ---
+const extractDates = (text: string): string[] => {
+  if (!text) return [];
+  const regex = /\b(\d{1,2}[\.\/]\d{1,2}[\.\/]\d{4}|\d{4}-\d{2}-\d{2})\b/g;
+  const matches = text.match(regex);
+  if (matches) {
+    return Array.from(new Set(matches.map(m => {
+      if (m.includes('-')) return m;
+      const parts = m.split(/[\.\/]/);
+      return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+    })));
+  }
+  return [];
+};
 
 type TabType = 'soru' | 'fotograf' | 'yukle';
 
@@ -55,13 +64,11 @@ function App() {
   // --- YENİ: Action Modal State'leri ---
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTitle, setModalTitle] = useState('');
-  const [modalType, setModalType] = useState<'calendar' | 'tasks'>('calendar');
+  const [modalType, setModalType] = useState<'calendar' | 'tasks' | 'notes'>('calendar');
   const [modalData, setModalData] = useState<any>({});
 
   // --- YENİ: AI Proaktif Bildirim State'leri (Polling ile Dolacak) ---
   const [proactiveFindings, setProactiveFindings] = useState<any[]>([]);
-  const [isTaskActionLoading, setIsTaskActionLoading] = useState(false);
-  const [taskSuccessMessage, setTaskSuccessMessage] = useState('');
 
   // --- YENİ: Ajan Proaktif Bildirim State ---
   const [asistanRaporu, setAsistanRaporu] = useState<any | null>(null);
@@ -269,39 +276,10 @@ function App() {
     }
   };
 
-  // --- YENİ: Not Kaydetme Fonksiyonu ---
-  const [noteFeedback, setNoteFeedback] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
 
-  const handleSaveNote = async (text: string) => {
-    if (!text || !text.trim()) {
-      setNoteFeedback({ message: 'Not içeriği boş olamaz!', type: 'error' });
-      setTimeout(() => setNoteFeedback(null), 3000);
-      return;
-    }
-
-    try {
-      await axios.post(`${API_URL}/api/notes`, { content: text.trim() });
-      setNoteFeedback({ message: 'Not başarıyla kaydedildi!', type: 'success' });
-    } catch (error: any) {
-      setNoteFeedback({
-        message: error.response?.data?.detail || 'Not kaydedilirken bir hata oluştu.',
-        type: 'error'
-      });
-    } finally {
-      setTimeout(() => setNoteFeedback(null), 3000);
-    }
-  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-600 via-purple-700 to-indigo-800 p-4 md:p-8 relative">
-      {/* Toast Bildirimi */}
-      {noteFeedback && (
-        <div className={`fixed top-6 left-1/2 transform -translate-x-1/2 z-[200] px-6 py-3 rounded-lg shadow-xl flex items-center gap-2 ${noteFeedback.type === 'success' ? 'bg-green-100 text-green-800 border border-green-200' : 'bg-red-100 text-red-800 border border-red-200'} transition-all animate-in fade-in slide-in-from-top-10`}>
-          {noteFeedback.type === 'success' ? <CheckCircle className="w-5 h-5" /> : <XCircle className="w-5 h-5" />}
-          <span className="font-semibold">{noteFeedback.message}</span>
-        </div>
-      )}
-
       {/* --- YENİ: Proaktif AI Ajan Bildirim Toast'u --- */}
       {asistanRaporu && (
         <div className="fixed top-6 right-6 z-[150] w-80 bg-white/90 backdrop-blur-md text-gray-800 rounded-xl shadow-2xl p-5 transform transition-all animate-in slide-in-from-right-8 zoom-in-95 ease-out duration-300 border border-gray-100">
@@ -331,7 +309,10 @@ function App() {
                 const noteText = asistanRaporu && typeof asistanRaporu === 'object'
                   ? Object.entries(asistanRaporu).map(([k, v]) => `${k}: ${v}`).join('\n')
                   : String(asistanRaporu || '');
-                handleSaveNote(noteText);
+                setModalTitle("Ajan Raporu");
+                setModalType('notes');
+                setModalData({ baslik: "Ajan Araştırması", icerik: noteText });
+                setModalOpen(true);
                 setAsistanRaporu(null);
               }}
               className="text-xs flex items-center text-indigo-600 hover:text-indigo-800 font-semibold transition-colors"
@@ -375,57 +356,39 @@ function App() {
             <p className="text-xs text-gray-400 mt-1">{proactiveFindings[0].tarih}</p>
           </div>
           <div className="flex space-x-2 mt-2">
-            {!taskSuccessMessage ? (
-              <>
-                <button
-                  onClick={async () => {
-                    setIsTaskActionLoading(true);
-                    try {
-                      await axios.post(`${API_URL}/api/takvime-ekle`, {
-                        task_id: proactiveFindings[0].id,
-                        action: "calendar_event",
-                        task_title: proactiveFindings[0].mesaj.substring(0, 30) // Başlığın ilk 30 karakteri
-                      });
-                      setTaskSuccessMessage('Takvime başarıyla eklendi!');
-                      setTimeout(() => {
-                        setProactiveFindings(prev => prev.slice(1)); // Bu bildirimi kaldır
-                        setTaskSuccessMessage('');
-                      }, 2000);
-                    } catch (e) {
-                      console.error("Task execute error:", e);
-                    } finally {
-                      setIsTaskActionLoading(false);
-                    }
-                  }}
-                  disabled={isTaskActionLoading}
-                  className="flex-1 bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold py-2.5 px-4 rounded-lg transition-colors flex items-center justify-center gap-1 disabled:opacity-70"
-                >
-                  {isTaskActionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : '📅 Ekle'}
-                </button>
-                <button
-                  onClick={() => {
-                    handleSaveNote(`${proactiveFindings[0].mesaj} - ${proactiveFindings[0].tarih}`);
-                    setProactiveFindings(prev => prev.slice(1));
-                  }}
-                  disabled={isTaskActionLoading}
-                  className="flex-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 text-xs font-bold py-2.5 px-2 rounded-lg transition-colors flex items-center justify-center gap-1 disabled:opacity-70 shadow-sm"
-                >
-                  📝 Not Al
-                </button>
-                <button
-                  onClick={() => setProactiveFindings(prev => prev.slice(1))}
-                  disabled={isTaskActionLoading}
-                  className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold py-2.5 px-3 rounded-lg transition-colors disabled:opacity-70"
-                >
-                  Yoksay
-                </button>
-              </>
-            ) : (
-              <div className="w-full bg-green-100 text-green-700 text-xs font-bold py-2.5 px-4 rounded-lg flex items-center justify-center gap-1">
-                <CheckCircle className="w-4 h-4" />
-                {taskSuccessMessage}
-              </div>
-            )}
+            <button
+              onClick={() => {
+                setModalTitle("Önerilen Etkinlik");
+                setModalType('calendar');
+                setModalData({ 
+                  baslik: proactiveFindings[0].mesaj.substring(0, 30), 
+                  tarih: proactiveFindings[0].tarih, 
+                  availableDates: extractDates(proactiveFindings[0].mesaj + " " + (proactiveFindings[0].tarih || ""))
+                });
+                setModalOpen(true);
+              }}
+              className="flex-1 bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold py-2.5 px-4 rounded-lg transition-colors flex items-center justify-center gap-1 shadow-sm"
+            >
+              📅 Ekle
+            </button>
+            <button
+              onClick={() => {
+                setModalTitle("Otomatik Not");
+                setModalType('notes');
+                setModalData({ baslik: proactiveFindings[0].mesaj, icerik: proactiveFindings[0].tarih || "" });
+                setModalOpen(true);
+                setProactiveFindings(prev => prev.slice(1));
+              }}
+              className="flex-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 text-xs font-bold py-2.5 px-2 rounded-lg transition-colors flex items-center justify-center gap-1 shadow-sm"
+            >
+              📝 Not Al
+            </button>
+            <button
+              onClick={() => setProactiveFindings(prev => prev.slice(1))}
+              className="bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-bold py-2.5 px-3 rounded-lg transition-colors"
+            >
+              Yoksay
+            </button>
           </div>
         </div>
       )}
@@ -543,7 +506,12 @@ function App() {
                   <p className="text-gray-800 mb-4 whitespace-pre-wrap">{soruResponse.cevap}</p>
 
                   <button
-                    onClick={() => handleSaveNote(soruResponse.cevap)}
+                    onClick={() => {
+                      setModalTitle("Arama Sonucu Notu");
+                      setModalType('notes');
+                      setModalData({ baslik: "Arama Sonucu", icerik: soruResponse.cevap });
+                      setModalOpen(true);
+                    }}
                     className="mb-4 bg-yellow-100 text-yellow-800 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-yellow-200 transition-colors flex items-center w-max shadow-sm"
                   >
                     📝 Notlara Kaydet
@@ -557,7 +525,11 @@ function App() {
                         setModalType('calendar');
                         // Backendin güncel tarihi alabilmesi için basit bir format bırakıyoruz
                         // Veya AI'dan gelen veriyi ileride buraya bağlayabilirsiniz.
-                        setModalData({ baslik: "Önerilen Etkinlik", tarih: "" });
+                        setModalData({ 
+                          baslik: "Önerilen Etkinlik", 
+                          tarih: "", 
+                          availableDates: extractDates(soruResponse.cevap) 
+                        });
                         setModalOpen(true);
                       }}
                       className="bg-blue-100 text-blue-700 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-blue-200 transition-colors flex items-center shadow-sm"
@@ -612,7 +584,12 @@ function App() {
                   <p className="mb-4 whitespace-pre-wrap text-gray-800">{fotoResponse.cevap}</p>
                   <div className="flex flex-wrap gap-2 mt-4">
                     <button
-                      onClick={() => handleSaveNote(fotoResponse.cevap)}
+                      onClick={() => {
+                        setModalTitle("Fotoğraf Analizi Notu");
+                        setModalType("notes");
+                        setModalData({ baslik: "Fotoğraf Analizi", icerik: fotoResponse.cevap });
+                        setModalOpen(true);
+                      }}
                       className="bg-yellow-100 text-yellow-800 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-yellow-200 transition-colors flex items-center w-max shadow-sm"
                     >
                       📝 Notlara Kaydet
@@ -621,7 +598,11 @@ function App() {
                       onClick={() => {
                         setModalTitle("Fotoğraf Analizi Etkinliği");
                         setModalType('calendar');
-                        setModalData({ baslik: "Fotoğraf Analiz Sonucu", tarih: "" });
+                        setModalData({ 
+                          baslik: "Fotoğraf Analiz Sonucu", 
+                          tarih: "",
+                          availableDates: extractDates(fotoResponse.cevap)
+                        });
                         setModalOpen(true);
                       }}
                       className="bg-blue-100 text-blue-700 font-semibold py-2 px-4 rounded-lg text-sm hover:bg-blue-200 transition-colors flex items-center shadow-sm"
