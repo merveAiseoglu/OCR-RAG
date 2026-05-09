@@ -16,6 +16,12 @@ from agent.task_extractor import CikartmaSonucu # Çıktıyı modellemek için y
 # Agent 2: Sohbet geçmişinden ilgi alanı çıkarıp arayan proaktif akış (proactive_graph.py)
 from agent.proactive_graph import graph as proactive_graph, ProactiveState
 
+# Agent 3: Çapraz Doküman Denetçisi (cross_document_auditor.py)
+from agent.cross_document_auditor import auditor_app
+
+# Agent 4: Dinamik Eksik Bilgi Denetçisi (missing_info_agent.py)
+from agent.missing_info_agent import validator_app
+
 # FastAPI uygulamasını başlatalım
 app = FastAPI(
     title="LangGraph Agent API", 
@@ -39,6 +45,13 @@ class TaskRequest(BaseModel):
 
 class ProactiveRequest(BaseModel):
     sohbet_gecmisi: List[str]
+
+class AuditorRequest(BaseModel):
+    doc1_text: str
+    doc2_text: str
+
+class ValidatorRequest(BaseModel):
+    extracted_text: str
 
 # --- Endpoints ---
 
@@ -95,6 +108,57 @@ async def proactive_search_endpoint(req: ProactiveRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Proaktif arama sırasında hata: {str(e)}")
+
+
+@app.post("/agent/audit-documents")
+async def audit_documents_endpoint(req: AuditorRequest):
+    """
+    İki dokümanı karşılaştırarak farklılıkları, eksiklikleri ve riskleri raporlayan LangGraph akışını tetikler.
+    """
+    try:
+        initial_state = {
+            "doc1_text": req.doc1_text,
+            "doc2_text": req.doc2_text,
+            "comparison_results": {},
+            "executive_summary": ""
+        }
+        
+        # ainvoke() ile asenkron grafiği çalıştır
+        final_state = await auditor_app.ainvoke(initial_state)
+        
+        return {
+            "success": True,
+            "comparison_results": final_state.get("comparison_results", {}),
+            "executive_summary": final_state.get("executive_summary", "")
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Doküman denetimi sırasında hata oluştu: {str(e)}")
+
+
+@app.post("/agent/validate-document")
+async def validate_document_endpoint(req: ValidatorRequest):
+    """
+    Belgeden çıkarılan metni analiz ederek doküman türünü belirler ve eksik alanları raporlayan LangGraph akışını tetikler.
+    """
+    try:
+        initial_state = {
+            "extracted_text": req.extracted_text,
+            "validation_results": {}
+        }
+        
+        # ainvoke() ile asenkron grafiği çalıştır
+        final_state = await validator_app.ainvoke(initial_state)
+        
+        return {
+            "success": True,
+            "validation_results": final_state.get("validation_results", {})
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Doküman doğrulaması sırasında hata oluştu: {str(e)}")
 
 
 if __name__ == "__main__":
