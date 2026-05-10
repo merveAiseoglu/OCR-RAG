@@ -1,4 +1,5 @@
 export default {
+  darkMode: 'class', // Forcing Vite to recompile tailwind
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",

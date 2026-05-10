@@ -101,6 +101,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+## mobilden gelen ping istekleri için endpoint --
+@app.get("/")
+def read_root():
+    return {"message": "Server is running"}
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("🎬 SİSTEM BAŞLATILIYOR...")
@@ -402,17 +407,34 @@ async def foto_analiz(file: UploadFile = File(...), soru: str = Form("Bu belgede
         raise HTTPException(500, f"İşlem başarısız: {str(e)}")
 
 # --- NOT YÖNETİMİ ---
-NOTES_FILE = "notes.json"
+from fastapi import Header
+
+def get_user_file(user_email: str, filename: str) -> str:
+    # E-postadaki özel karakterleri klasör ismine uygun hale getir
+    safe_email = user_email.replace('@', '_').replace('.', '_')
+    user_dir = os.path.join("data", safe_email)
+    if not os.path.exists(user_dir):
+        os.makedirs(user_dir, exist_ok=True)
+    return os.path.join(user_dir, filename)
+
+from typing import Optional
 
 class NoteCreate(BaseModel):
     content: str
+    title: Optional[str] = None
+
+class NoteUpdate(BaseModel):
+    content: Optional[str] = None
+    title: Optional[str] = None
+    pinned: Optional[bool] = None
 
 @app.get("/api/notes")
-async def get_notes():
-    if not os.path.exists(NOTES_FILE):
+async def get_notes(x_user_email: str = Header(default="default_user")):
+    notes_file = get_user_file(x_user_email, "notes.json")
+    if not os.path.exists(notes_file):
         return []
     try:
-        async with aiofiles.open(NOTES_FILE, mode='r', encoding='utf-8') as f:
+        async with aiofiles.open(notes_file, mode='r', encoding='utf-8') as f:
             content = await f.read()
             if not content.strip():
                 return []
@@ -422,11 +444,12 @@ async def get_notes():
         return []
 
 @app.post("/api/notes")
-async def create_note(note: NoteCreate):
+async def create_note(note: NoteCreate, x_user_email: str = Header(default="default_user")):
+    notes_file = get_user_file(x_user_email, "notes.json")
     notes = []
-    if os.path.exists(NOTES_FILE):
+    if os.path.exists(notes_file):
         try:
-            async with aiofiles.open(NOTES_FILE, mode='r', encoding='utf-8') as f:
+            async with aiofiles.open(notes_file, mode='r', encoding='utf-8') as f:
                 content = await f.read()
                 if content.strip():
                     notes = json.loads(content)
@@ -437,12 +460,14 @@ async def create_note(note: NoteCreate):
     new_note = {
         "id": str(uuid.uuid4()),
         "content": note.content,
+        "title": note.title or "İsimsiz Not",
+        "pinned": False,
         "timestamp": datetime.datetime.now().isoformat()
     }
     notes.append(new_note)
     
     try:
-        async with aiofiles.open(NOTES_FILE, mode='w', encoding='utf-8') as f:
+        async with aiofiles.open(notes_file, mode='w', encoding='utf-8') as f:
             await f.write(json.dumps(notes, ensure_ascii=False, indent=4))
         return new_note
     except Exception as e:
@@ -450,12 +475,13 @@ async def create_note(note: NoteCreate):
         raise HTTPException(status_code=500, detail=f"Dosyaya yazma hatası: Not kaydedilemedi ({str(e)}).")
 
 @app.delete("/api/notes/{note_id}")
-async def delete_note(note_id: str):
-    if not os.path.exists(NOTES_FILE):
+async def delete_note(note_id: str, x_user_email: str = Header(default="default_user")):
+    notes_file = get_user_file(x_user_email, "notes.json")
+    if not os.path.exists(notes_file):
         raise HTTPException(status_code=404, detail="Not bulunamadı.")
         
     try:
-        async with aiofiles.open(NOTES_FILE, mode='r', encoding='utf-8') as f:
+        async with aiofiles.open(notes_file, mode='r', encoding='utf-8') as f:
             content = await f.read()
             if not content.strip():
                 raise HTTPException(status_code=404, detail="Not bulunamadı.")
@@ -467,7 +493,7 @@ async def delete_note(note_id: str):
         if len(notes) == initial_length:
             raise HTTPException(status_code=404, detail="Not bulunamadı.")
             
-        async with aiofiles.open(NOTES_FILE, mode='w', encoding='utf-8') as f:
+        async with aiofiles.open(notes_file, mode='w', encoding='utf-8') as f:
             await f.write(json.dumps(notes, ensure_ascii=False, indent=4))
             
         return {"success": True, "detail": "Not başarıyla silindi."}
@@ -479,12 +505,13 @@ async def delete_note(note_id: str):
         raise HTTPException(status_code=500, detail=f"Not silinirken hata oluştu: ({str(e)}).")
 
 @app.put("/api/notes/update/{note_id}")
-async def update_note(note_id: str, note: NoteCreate):
-    if not os.path.exists(NOTES_FILE):
+async def update_note(note_id: str, note: NoteUpdate, x_user_email: str = Header(default="default_user")):
+    notes_file = get_user_file(x_user_email, "notes.json")
+    if not os.path.exists(notes_file):
         raise HTTPException(status_code=404, detail="Not bulunamadı.")
         
     try:
-        async with aiofiles.open(NOTES_FILE, mode='r', encoding='utf-8') as f:
+        async with aiofiles.open(notes_file, mode='r', encoding='utf-8') as f:
             content = await f.read()
             if not content.strip():
                 raise HTTPException(status_code=404, detail="Not bulunamadı.")
@@ -493,14 +520,19 @@ async def update_note(note_id: str, note: NoteCreate):
         updated = False
         for n in notes:
             if n.get("id") == note_id:
-                n["content"] = note.content
+                if note.content is not None:
+                    n["content"] = note.content
+                if note.title is not None:
+                    n["title"] = note.title
+                if note.pinned is not None:
+                    n["pinned"] = note.pinned
                 updated = True
                 break
                 
         if not updated:
             raise HTTPException(status_code=404, detail="Not bulunamadı.")
             
-        async with aiofiles.open(NOTES_FILE, mode='w', encoding='utf-8') as f:
+        async with aiofiles.open(notes_file, mode='w', encoding='utf-8') as f:
             await f.write(json.dumps(notes, ensure_ascii=False, indent=4))
             
         return {"success": True, "detail": "Not başarıyla güncellendi."}
@@ -510,6 +542,95 @@ async def update_note(note_id: str, note: NoteCreate):
     except Exception as e:
         logger.error(f"Not güncelleme hatası: {e}")
         raise HTTPException(status_code=500, detail=f"Not güncellenirken hata oluştu: ({str(e)}).")
+
+# --- GEÇMİŞ YÖNETİMİ ---
+@app.get("/api/history")
+async def get_history(x_user_email: str = Header(default="default_user")):
+    history_file = get_user_file(x_user_email, "history.json")
+    if not os.path.exists(history_file):
+        return []
+    try:
+        async with aiofiles.open(history_file, mode='r', encoding='utf-8') as f:
+            content = await f.read()
+            if not content.strip():
+                return []
+            return json.loads(content)
+    except Exception as e:
+        logger.error(f"Geçmiş okuma hatası: {e}")
+        return []
+
+@app.post("/api/history")
+async def save_history(history_data: list, x_user_email: str = Header(default="default_user")):
+    history_file = get_user_file(x_user_email, "history.json")
+    try:
+        async with aiofiles.open(history_file, mode='w', encoding='utf-8') as f:
+            await f.write(json.dumps(history_data, ensure_ascii=False, indent=4))
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Geçmiş yazma hatası: {e}")
+        raise HTTPException(status_code=500, detail="Geçmiş kaydedilemedi.")
+
+@app.post("/api/migrate-guest")
+async def migrate_guest_data(x_user_email: str = Header(default="default_user")):
+    if x_user_email == "guest" or x_user_email == "default_user":
+        return {"status": "skipped", "message": "Geçersiz veya eksik hedef e-posta."}
+        
+    guest_dir = get_user_file("guest", "")
+    if not os.path.exists(guest_dir):
+        return {"status": "skipped", "message": "Aktarılacak misafir verisi bulunamadı."}
+        
+    target_dir = get_user_file(x_user_email, "")
+    files_to_merge = ["notes.json", "calendar.json", "history.json"]
+    
+    merged_any = False
+    
+    for filename in files_to_merge:
+        guest_file = os.path.join(guest_dir, filename)
+        target_file = os.path.join(target_dir, filename)
+        
+        if os.path.exists(guest_file):
+            try:
+                # Guest datasını oku
+                with open(guest_file, 'r', encoding='utf-8') as f:
+                    guest_data = json.load(f)
+                    
+                if not isinstance(guest_data, list) or len(guest_data) == 0:
+                    continue
+                    
+                # Hedef veriyi oku
+                target_data = []
+                if os.path.exists(target_file):
+                    with open(target_file, 'r', encoding='utf-8') as f:
+                        target_data = json.load(f)
+                
+                if isinstance(target_data, list):
+                    # Birleştir (id çakışmalarını önlemek için basitçe ekleyebiliriz)
+                    # Aynı içeriğe sahip olanları elemeyi deneyebiliriz ama şimdilik direkt ekliyoruz.
+                    # ID'ler uuid/date.now olduğu için çakışma ihtimali çok düşük.
+                    merged_data = target_data + guest_data
+                    
+                    # Hedefe yaz
+                    with open(target_file, 'w', encoding='utf-8') as f:
+                        json.dump(merged_data, f, ensure_ascii=False, indent=4)
+                    
+                    merged_any = True
+            except Exception as e:
+                logger.error(f"{filename} aktarılırken hata: {e}")
+                
+    # Migration bittikten sonra guest klasörünün içini temizle
+    try:
+        if os.path.exists(guest_dir):
+            for filename in os.listdir(guest_dir):
+                file_path = os.path.join(guest_dir, filename)
+                try:
+                    if os.path.isfile(file_path):
+                        os.unlink(file_path)
+                except Exception as e:
+                    logger.error(f"Guest dosyası silinirken hata {file_path}: {e}")
+    except Exception as e:
+        logger.error(f"Guest dizini temizlenirken hata: {e}")
+        
+    return {"status": "success", "message": "Misafir verileri başarıyla hesabınıza aktarıldı." if merged_any else "Aktarılacak veri yoktu."}
 
 # --- BİLDİRİM PANEL KISMI ---
 @app.get("/api/agent/proactive-search")
@@ -575,27 +696,12 @@ async def check_proactive_findings():
 # --- GOOGLE CALENDAR ENTEGRASYONU ---
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 
-def get_calendar_service():
-    """Google Calendar API'sine erişim sağlamak için kimlik doğrulaması yapar ve servisi döndürür."""
-    creds = None
-    # Kullanıcının daha önceden aldığı izni saklayan dosya
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    
-    # Eğer geçerli bir izin yoksa (ilk defa ya da süresi dolmuşsa) kullanıcıdan iste
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            # credentials.json dosyası ana dizinde olmalıdır
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
+def get_calendar_service(access_token: str):
+    """Google Calendar API'sine erişim sağlamak için frontend'den gelen tokeni kullanır."""
+    if not access_token:
+        raise ValueError("Google erişim izni (token) bulunamadı.")
         
-        # Yeni alınan izni token.json dosyasına kaydet
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-
-    # Takvim servisini oluştur ve döndür
+    creds = Credentials(token=access_token)
     service = build('calendar', 'v3', credentials=creds)
     return service
 
@@ -605,61 +711,123 @@ class ExecuteTaskRequest(BaseModel):
     task_title: Optional[str] = "Bilinmeyen Görev"
     task_date: Optional[str] = None
 
+@app.get("/api/calendar/events")
+async def get_calendar_events(x_user_email: str = Header(default="default_user"), x_google_token: str = Header(default="")):
+    events_list = []
+    
+    # 1. Google Takvim'den çek
+    if x_google_token:
+        try:
+            service = get_calendar_service(x_google_token)
+            now = datetime.datetime.utcnow().isoformat() + 'Z'
+            events_result = service.events().list(calendarId='primary', timeMin=now,
+                                                  maxResults=10, singleEvents=True,
+                                                  orderBy='startTime').execute()
+            google_events = events_result.get('items', [])
+            for ge in google_events:
+                start = ge['start'].get('dateTime', ge['start'].get('date'))
+                events_list.append({
+                    "id": ge['id'],
+                    "title": ge.get('summary', 'İsimsiz Etkinlik'),
+                    "start": start,
+                    "source": "google"
+                })
+        except Exception as e:
+            logger.error(f"Google Calendar GET hatası: {e}")
+
+    # 2. Yerel calendar.json'dan çek
+    calendar_file = get_user_file(x_user_email, "calendar.json")
+    if os.path.exists(calendar_file):
+        try:
+            with open(calendar_file, 'r', encoding='utf-8') as f:
+                local_events = json.load(f)
+            # Zaman filtresi uygula
+            now_dt = datetime.datetime.now()
+            for le in local_events:
+                try:
+                    le_dt = datetime.datetime.fromisoformat(le['start'])
+                    if le_dt > now_dt:
+                        events_list.append(le)
+                except:
+                    pass
+        except Exception as e:
+            logger.error(f"Yerel takvim okuma hatası: {e}")
+            
+    # Geriye dönmeden önce zamana göre sırala
+    events_list.sort(key=lambda x: x['start'])
+    return {"events": events_list}
+
 @app.post("/api/action/calendar/add")
-async def execute_task(req: ExecuteTaskRequest):
-    """
-    Frontend'den gelen task onayını alır ve dinamik tarihle Google Takvim'e ekler.
-    """
+async def execute_task(req: ExecuteTaskRequest, x_user_email: str = Header(default="default_user"), x_google_token: str = Header(default="")):
     if req.action == "calendar_event":
         basarisiz_mesaj = f"BAŞARILI: '{req.task_title}' Google Takvim'e ekleniyor..."
         logger.info(basarisiz_mesaj)
-        print(basarisiz_mesaj) # Geliştirici terminalde de net görsün
+        
+        event_link = ""
+        start_time_iso = ""
+        
+        # 1. Google Takvim'e kaydet
+        if x_google_token:
+            try:
+                service = get_calendar_service(x_google_token)
+                
+                now = datetime.datetime.now()
+                start_time = now + datetime.timedelta(hours=1)
+                end_time = start_time + datetime.timedelta(hours=1)
+                
+                if req.task_date:
+                    try:
+                        selected_date = datetime.datetime.strptime(req.task_date, "%Y-%m-%d")
+                        if selected_date.date() != now.date():
+                            start_time = selected_date.replace(hour=10, minute=0, second=0)
+                            end_time = start_time + datetime.timedelta(hours=1)
+                    except Exception as e:
+                        pass
+                        
+                start_time_iso = start_time.isoformat()
+                
+                event = {
+                    'summary': req.task_title,
+                    'description': 'AI Asistan tarafından uygulamanız aracılığıyla eklendi.',
+                    'start': {'dateTime': start_time.isoformat() + '+03:00', 'timeZone': 'Europe/Istanbul'},
+                    'end': {'dateTime': end_time.isoformat() + '+03:00', 'timeZone': 'Europe/Istanbul'},
+                }
+                
+                event_result = service.events().insert(calendarId='primary', body=event).execute()
+                event_link = event_result.get('htmlLink')
+            except Exception as e:
+                logger.error(f"Google Calendar API Hatası: {e}")
+            # Hata olsa bile local'e kaydetmeye devam et
+            
+        # 2. Yerel calendar.json'a yedekle (Dual Save)
+        local_event = {
+            "id": str(uuid.uuid4()),
+            "title": req.task_title,
+            "start": start_time_iso or datetime.datetime.now().isoformat(),
+            "source": "local"
+        }
+        
+        calendar_file = get_user_file(x_user_email, "calendar.json")
+        local_events = []
+        if os.path.exists(calendar_file):
+            try:
+                with open(calendar_file, 'r', encoding='utf-8') as f:
+                    local_events = json.load(f)
+            except: pass
+            
+        local_events.append(local_event)
         
         try:
-            service = get_calendar_service()
-            
-            # Dinamik tarih ayarı
-            now = datetime.datetime.now()
-            start_time = now + datetime.timedelta(hours=1)
-            end_time = start_time + datetime.timedelta(hours=1)
-            
-            if req.task_date:
-                try:
-                    selected_date = datetime.datetime.strptime(req.task_date, "%Y-%m-%d")
-                    # Eğer seçilen tarih bugün ise saati şimdiden 1 saat sonrası olarak bırak
-                    if selected_date.date() != now.date():
-                        # Geçmişte veya gelecekte başka bir günse saat 10:00'a etkinliği kur
-                        start_time = selected_date.replace(hour=10, minute=0, second=0)
-                        end_time = start_time + datetime.timedelta(hours=1)
-                except Exception as e:
-                    logger.warning(f"Geçersiz tarih formatı '{req.task_date}': {e}. Varsayılan saat kullanılacak.")
-            
-            event = {
-                'summary': req.task_title,
-                'description': 'AI Asistan tarafından uygulamanız aracılığıyla eklendi.',
-                'start': {
-                    'dateTime': start_time.isoformat() + '+03:00',
-                    'timeZone': 'Europe/Istanbul',
-                },
-                'end': {
-                    'dateTime': end_time.isoformat() + '+03:00',
-                    'timeZone': 'Europe/Istanbul',
-                },
-            }
-            
-            # Google Calendar API üzerinden etkinliği ekle
-            # calendarId='primary' kullanıcının ana takvimini ifade eder.
-            event_result = service.events().insert(calendarId='primary', body=event).execute()
-            logger.info(f"Takvim etkinliği başarıyla oluşturuldu: {event_result.get('htmlLink')}")
-            
-            return {
-                "status": "success", 
-                "message": f"{basarisiz_mesaj} Etkinlik başarıyla oluşturuldu!",
-                "event_link": event_result.get('htmlLink')
-            }
+            with open(calendar_file, 'w', encoding='utf-8') as f:
+                json.dump(local_events, f, ensure_ascii=False, indent=4)
         except Exception as e:
-            logger.error(f"Google Calendar API Hatası: {e}")
-            return {"status": "error", "message": f"Takvime eklenirken hata oluştu: {str(e)}"}
+            logger.error(f"Yerel takvim yazma hatası: {e}")
+
+        return {
+            "status": "success", 
+            "message": "Etkinlik başarıyla eklendi!",
+            "event_link": event_link
+        }
     
     return {"status": "error", "message": "Geçersiz action."}
 
