@@ -1,9 +1,58 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Upload, Camera, FileText, Loader2, CheckCircle, XCircle, Menu, X, MessageSquare, Trash2, StickyNote, Sparkles, Calendar as CalendarIcon, Send, Bot, User, Paperclip, Sun, Moon, ChevronLeft, ChevronRight, PlusCircle, Pin, Plus, Clock, ExternalLink, ChevronDown, ChevronUp, LogOut, Edit2 } from 'lucide-react';
+import { Search, Upload, Camera, FileText, Loader2, CheckCircle, XCircle, Menu, X, MessageSquare, Trash2, StickyNote, Sparkles, Calendar as CalendarIcon, Send, Bot, User, Paperclip, Sun, Moon, ChevronLeft, ChevronRight, PlusCircle, Pin, Plus, Clock, ExternalLink, ChevronDown, ChevronUp, LogOut, Edit2, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import { ActionModal } from './components/ActionModal';
+import { ValidatorModal, ValidatorResponse } from './components/ValidatorModal';
+import { AuditorReport, AuditorResponse } from './components/AuditorReport';
 import { useGoogleLogin, googleLogout } from '@react-oauth/google';
 import { jwtDecode } from "jwt-decode";
+
+// --- MOCK DATA (backend'den gelene kadar) ---
+const mockValidatorResponse: ValidatorResponse = {
+  is_complete: false,
+  document_type: 'Kira Sözleşmesi',
+  confidence: 0.87,
+  missing_fields: ['tarih', 'tc_no', 'iban', 'imza'],
+};
+
+const mockAuditorResponse: AuditorResponse = {
+  risk_score: 8,
+  executive_summary:
+    'Sözleşme ciddi eksiklikler içermektedir. Yüksek risk skoru, kiracı aleyhine hükümler ve yasal standartların altında kalan maddeler nedeniyle oluşmuştur. İmzalanmadan önce hukuki danışmanlık alınması şiddetle önerilir.',
+  timestamp: new Date().toISOString(),
+  changes: [
+    {
+      type: 'risk',
+      title: 'Tek Taraflı Fesih Maddesi',
+      description: 'Madde 7.2, kiraya verenin herhangi bir gerekçe göstermeksizin 15 gün içinde sözleşmeyi feshedebileceğini belirtmektedir. Bu durum kiracı açısından yüksek risk oluşturmaktadır.',
+      severity: 'high',
+    },
+    {
+      type: 'degisiklik',
+      title: 'Kira Artış Oranı Değiştirilmiş',
+      description: 'Standart sözleşmedeki %25 kira artış sınırı kaldırılmış, yerine "piyasa koşullarına göre belirlenir" ifadesi eklenmiştir.',
+      severity: 'high',
+    },
+    {
+      type: 'silme',
+      title: 'Depozito İade Maddesi Silinmiş',
+      description: 'Orijinal taslakta yer alan 30 günlük depozito iade süresi kaldırılmış ve yerine herhangi bir süre sınırı konmamıştır.',
+      severity: 'medium',
+    },
+    {
+      type: 'ekleme',
+      title: 'Yeni Bakım ve Onarım Yükümlülüğü',
+      description: '10.000 TL altındaki tüm bakım ve onarım masraflarının kiracıya ait olduğu yeni bir madde eklenmiştir.',
+      severity: 'medium',
+    },
+  ],
+  missing_clauses: [
+    'Zorunlu afet/deprem sigorta maddesi eksik',
+    'Tahliye protokolü tanımlanmamış',
+    'Anlaşmazlık çözüm mekanizması (arabuluculuk) belirtilmemiş',
+    'Alt kiralama yasağı maddesi yok',
+  ],
+};
 
 const API_URL = 'http://localhost:8000';
 
@@ -142,6 +191,11 @@ function App() {
 
   const [proactiveFindings, setProactiveFindings] = useState<any[]>([]);
   const [asistanRaporu, setAsistanRaporu] = useState<any | null>(null);
+
+  // --- AI Feature States ---
+  const [validatorOpen, setValidatorOpen] = useState(false);
+  const [auditorReportData, setAuditorReportData] = useState<AuditorResponse | null>(null);
+  const [rightTab, setRightTab] = useState<'calendar' | 'validator' | 'auditor'>('calendar');
 
   const currentEmail = userProfile?.email || 'guest';
   const axiosInstance = axios.create({
@@ -698,6 +752,19 @@ function App() {
 
 
 
+      {/* ValidatorModal */}
+      <ValidatorModal
+        isOpen={validatorOpen}
+        onClose={() => setValidatorOpen(false)}
+        validatorData={mockValidatorResponse}
+        onSubmit={async (fields) => {
+          console.log('Validator form submitted:', fields);
+          // TODO: POST to /api/validator/complete with fields
+        }}
+      />
+
+
+
       <ActionModal isOpen={modalOpen} onClose={() => { setModalOpen(false); fetchCalendarEvents(); }} title={modalTitle} type={modalType} data={modalData} />
 
       {/* Left Sidebar (Accordions) */}
@@ -978,6 +1045,10 @@ function App() {
             </div>
           ) : (
             <div className="max-w-4xl mx-auto py-8 space-y-8">
+              {/* Auditor Report (shown when demo is triggered) */}
+              {auditorReportData && (
+                <AuditorReport data={auditorReportData} />
+              )}
               {chatMessages.map((msg) => (
                 <div key={msg.id} className={`flex gap-4 ${msg.type === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
                   
@@ -1077,59 +1148,116 @@ function App() {
         <input ref={pdfInputRef} type="file" accept=".pdf" onChange={(e) => { if(e.target.files?.[0]) { setSelectedFile(e.target.files[0]); if(inputRef.current) inputRef.current.focus(); } }} className="hidden" />
       </div>
 
-      {/* Right Sidebar (Calendar & Tasks ONLY) */}
+      {/* Right Sidebar — Tabbed */}
       <div className={`hidden xl:flex flex-col bg-slate-50/80 dark:bg-[#12141a]/80 backdrop-blur-xl border-l border-slate-200 dark:border-slate-800/50 z-20 transition-all duration-300 ease-in-out ${isRightExpanded ? 'w-[350px]' : 'w-20'}`}>
-        
-        {/* Toggle Button */}
-        <div className={`p-4 border-b border-slate-200 dark:border-slate-800/50 h-[72px] flex items-center transition-all duration-300 ${isRightExpanded ? 'justify-between' : 'justify-center border-transparent'}`}>
-          {isRightExpanded && (
-            <a 
-              href="https://calendar.google.com/" 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="flex-1 bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-700 hover:border-emerald-400 dark:hover:border-emerald-500/50 text-slate-700 dark:text-slate-200 py-2 px-3 rounded-lg flex items-center justify-center gap-2 text-xs font-bold transition-all shadow-sm group"
-            >
-              <CalendarIcon className="w-4 h-4 text-emerald-500" />
-              Google Takvim'i Aç
-              <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-500 transition-colors ml-1" />
-            </a>
-          )}
-          <button onClick={() => setIsRightExpanded(!isRightExpanded)} className={`p-1.5 text-slate-400 hover:text-slate-800 dark:hover:text-white rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors ${!isRightExpanded ? '' : 'ml-2'}`}>
-             {isRightExpanded ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}
-          </button>
-        </div>
 
-        {/* Takvim İçeriği */}
-        <div className={`flex-1 overflow-y-auto scrollbar-hide p-4 flex flex-col transition-all duration-300 ${!isRightExpanded ? 'items-center justify-start gap-y-6 pt-6' : 'gap-6'}`}>
-          {!isRightExpanded ? (
-            <div className="relative group">
-               <div className="p-3 bg-slate-100 dark:bg-[#1a1d24] rounded-xl flex items-center justify-center shadow-sm text-emerald-500 hover:bg-slate-200 dark:hover:bg-slate-800/80 transition-all duration-300">
-                  <CalendarIcon className="w-5 h-5" />
-               </div>
-               <span className="absolute right-full top-1/2 -translate-y-1/2 mr-4 px-2 py-1 bg-slate-800 dark:bg-slate-700 text-white text-xs rounded opacity-0 translate-x-0 group-hover:opacity-100 group-hover:-translate-x-1 transition-all duration-300 whitespace-nowrap z-50 pointer-events-none shadow-lg">Takvim</span>
+        {/* Header */}
+        {isRightExpanded ? (
+          /* ── EXPANDED: tab buttons + collapse arrow ── */
+          <div className="h-[72px] flex items-center px-3 gap-1 border-b border-slate-200 dark:border-slate-800/50">
+            {([
+              { key: 'calendar',  icon: <CalendarIcon className="w-4 h-4" />, label: 'Takvim' },
+              { key: 'validator', icon: <AlertTriangle className="w-4 h-4" />, label: 'Eksik Bilgi' },
+              { key: 'auditor',   icon: <FileText className="w-4 h-4" />,      label: 'Sözleşme' },
+            ] as const).map(({ key, icon, label }) => (
+              <button
+                key={key}
+                onClick={() => setRightTab(key)}
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-[11px] font-semibold transition-all duration-200 ${
+                  rightTab === key
+                    ? 'bg-white dark:bg-[#1a1d24] text-indigo-600 dark:text-indigo-400 shadow-sm border border-slate-200 dark:border-slate-700'
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-white/50 dark:hover:bg-white/5'
+                }`}
+              >
+                {icon}{label}
+              </button>
+            ))}
+            {/* Collapse arrow */}
+            <button
+              onClick={() => setIsRightExpanded(false)}
+              className="ml-1 p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors flex-shrink-0"
+              title="Paneli Kapat"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
+          /* ── COLLAPSED: expand arrow at top, icons centered ── */
+          <div className="flex flex-col items-center h-full">
+            {/* Expand arrow — pinned to top */}
+            <button
+              onClick={() => setIsRightExpanded(true)}
+              className="w-12 h-[72px] flex items-center justify-center text-slate-400 hover:text-indigo-500 hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-all duration-200 border-b border-slate-200 dark:border-slate-800/50 flex-shrink-0"
+              title="Paneli Aç"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+
+            {/* Tab icons — centered in remaining space */}
+            <div className="flex-1 flex flex-col items-center justify-center gap-4">
+              {([
+                { key: 'calendar',  icon: <CalendarIcon className="w-5 h-5" />,   label: 'Takvim',      color: 'text-emerald-500' },
+                { key: 'validator', icon: <AlertTriangle className="w-5 h-5" />,  label: 'Eksik Bilgi', color: 'text-purple-500'  },
+                { key: 'auditor',   icon: <FileText className="w-5 h-5" />,        label: 'Sözleşme',   color: 'text-indigo-500'  },
+              ] as const).map(({ key, icon, label, color }) => (
+                <div key={key} className="relative group">
+                  <button
+                    onClick={() => { setRightTab(key); setIsRightExpanded(true); }}
+                    className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all duration-200 shadow-sm ${
+                      rightTab === key
+                        ? 'bg-white dark:bg-[#1a1d24] ring-1 ring-slate-300 dark:ring-slate-700'
+                        : 'bg-slate-100 dark:bg-[#1a1d24] hover:bg-slate-200 dark:hover:bg-slate-800/80'
+                    } ${color}`}
+                  >
+                    {icon}
+                  </button>
+                  <span className="absolute right-full top-1/2 -translate-y-1/2 mr-3 px-2 py-1 bg-slate-800 dark:bg-slate-700 text-white text-xs rounded opacity-0 group-hover:opacity-100 group-hover:-translate-x-1 transition-all duration-200 whitespace-nowrap z-50 pointer-events-none shadow-lg">
+                    {label}
+                  </span>
+                </div>
+              ))}
             </div>
-          ) : (
+          </div>
+        )}
+
+        {/* Tab Content */}
+        <div className="flex-1 overflow-y-auto scrollbar-hide p-4 flex flex-col gap-6">
+
+          {/* ── TAB: CALENDAR (original code — untouched) ── */}
+          {(rightTab === 'calendar' || !isRightExpanded) && isRightExpanded && (
             <>
+              {/* Google Takvim'i Aç */}
+              <a
+                href="https://calendar.google.com/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-700 hover:border-emerald-400 dark:hover:border-emerald-500/50 text-slate-700 dark:text-slate-200 py-2 px-3 rounded-lg flex items-center justify-center gap-2 text-xs font-bold transition-all shadow-sm group animate-in slide-in-from-right-4"
+              >
+                <CalendarIcon className="w-4 h-4 text-emerald-500" />
+                Google Takvim'i Aç
+                <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-500 transition-colors ml-1" />
+              </a>
+
               {/* Hızlı Ekle Formu */}
               <div className="bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm animate-in slide-in-from-right-4">
                 <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-3 flex items-center gap-2">
                   <PlusCircle className="w-4 h-4 text-emerald-500" /> Hızlı Etkinlik Ekle
                 </h3>
                 <div className="flex flex-col gap-3">
-                  <input 
-                    type="text" 
-                    placeholder="Etkinlik Başlığı" 
+                  <input
+                    type="text"
+                    placeholder="Etkinlik Başlığı"
                     value={quickEventTitle}
                     onChange={(e) => setQuickEventTitle(e.target.value)}
                     className="w-full bg-slate-50 dark:bg-[#12141a] text-slate-800 dark:text-slate-200 text-sm px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 outline-none focus:ring-1 focus:ring-emerald-500"
                   />
-                  <input 
-                    type="date" 
+                  <input
+                    type="date"
                     value={quickEventDate}
                     onChange={(e) => setQuickEventDate(e.target.value)}
                     className="w-full bg-slate-50 dark:bg-[#12141a] text-slate-800 dark:text-slate-200 text-sm px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 outline-none focus:ring-1 focus:ring-emerald-500"
                   />
-                  <button 
+                  <button
                     onClick={handleQuickAddEvent}
                     disabled={!quickEventTitle.trim() || isCalendarLoading}
                     className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm py-2 rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center"
@@ -1166,15 +1294,73 @@ function App() {
                             {d.toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
                           </span>
                         </div>
-                      )
+                      );
                     })
                   )}
                 </div>
               </div>
             </>
           )}
+
+          {/* ── TAB: VALIDATOR ── */}
+          {rightTab === 'validator' && isRightExpanded && (
+            <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="w-8 h-8 bg-purple-100 dark:bg-purple-500/20 rounded-lg flex items-center justify-center">
+                  <Search className="w-4 h-4 text-purple-500" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200">Eksik Bilgi Analizi</h2>
+                  <p className="text-[11px] text-slate-500">Belgede eksik alanları tamamla</p>
+                </div>
+              </div>
+              {!mockValidatorResponse.is_complete ? (
+                <div className="flex flex-col gap-3">
+                  {mockValidatorResponse.missing_fields.map((field) => {
+                    const labels: Record<string, string> = { tarih: 'Tarih', tc_no: 'TC Kimlik No', iban: 'IBAN', imza: 'İmza', ad_soyad: 'Ad Soyad', telefon: 'Telefon', tutar: 'Tutar (₺)' };
+                    const types: Record<string, string> = { tarih: 'date', tc_no: 'text', iban: 'text', telefon: 'tel', tutar: 'number' };
+                    return (
+                      <div key={field} className="flex flex-col gap-1.5">
+                        <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">{labels[field] ?? field}</label>
+                        <input
+                          type={types[field] ?? 'text'}
+                          placeholder={`${labels[field] ?? field} giriniz...`}
+                          className="w-full bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-700 focus:border-purple-500 focus:ring-1 focus:ring-purple-500/30 rounded-xl px-3 py-2 text-sm text-slate-800 dark:text-slate-200 outline-none transition-all"
+                        />
+                      </div>
+                    );
+                  })}
+                  <button className="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold transition-colors mt-1">
+                    Bilgileri Tamamla
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center gap-2 py-8">
+                  <CheckCircle className="w-10 h-10 text-emerald-500" />
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">Belge eksiksiz!</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── TAB: AUDITOR ── */}
+          {rightTab === 'auditor' && isRightExpanded && (
+            <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="w-8 h-8 bg-indigo-100 dark:bg-indigo-500/20 rounded-lg flex items-center justify-center">
+                  <FileText className="w-4 h-4 text-indigo-500" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200">Sözleşme Denetçisi</h2>
+                  <p className="text-[11px] text-slate-500">Risk analizi ve eksik maddeler</p>
+                </div>
+              </div>
+              <AuditorReport data={mockAuditorResponse} />
+            </div>
+          )}
         </div>
-        {/* Integrated Countdown Component */}
+
+        {/* Countdown strip — only calendar tab or mini-bar */}
         {closestEvent && (
           <div className="border-t border-slate-200 dark:border-slate-800/50 bg-slate-50/80 dark:bg-[#12141a]/80 backdrop-blur-md p-4 flex flex-col items-center justify-center transition-all duration-300 w-full z-10 shrink-0">
             {isRightExpanded ? (
