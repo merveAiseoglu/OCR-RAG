@@ -87,3 +87,31 @@ if __name__ == "__main__":
     print("\n🏷️ KONULAR:")
     for k in sonuc.konular:
         print(f"  - {k}")
+
+# --- CLASS YAPISI (Seçenek 2'ye uygun şekilde 'api.py' içinde TaskExtractor.extract() çağrısı için) ---
+class TaskExtractor:
+    def extract(self, text: str) -> list:
+        try:
+            cikarilan_veri = metinden_cikar(text)
+            findings = []
+            
+            # Görevleri ekle
+            for gorev in cikarilan_veri.gorevler:
+                findings.append({
+                    "title": gorev.baslik,
+                    "date": gorev.son_tarih if gorev.son_tarih else "Belirtilmemiş"
+                })
+                
+            # Görev yoksa ama önemli tarihler varsa onları da bulgu olarak ekle
+            if not findings and cikarilan_veri.onemli_tarihler:
+                for tarih in cikarilan_veri.onemli_tarihler:
+                    findings.append({
+                        "title": "İlgili Etkinlik/Tarih",
+                        "date": tarih
+                    })
+                    
+            # Eğer hiçbir şey çıkmazsa veya hata olursa boş liste
+            return findings
+        except Exception as e:
+            print(f"Görev çıkarma hatası: {e}")
+            return []
