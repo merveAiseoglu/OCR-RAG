@@ -108,23 +108,54 @@ class DocumentProcessor:
         
         return chunks
 
-    def chunk_text(self, text, chunk_size=800, overlap=100):
-        """Metni parçalara böler (Eski yöntem - fallback)"""
+    def chunk_text(self, text, max_chunk_size=800, overlap=100):
+        """
+        OPTİMİZE EDİLMİŞ CHUNKING:
+        Metni rastgele karakter sayısına göre değil, LLM'in daha iyi anlaması için 
+        önce paragraflara (\n\n) böler. Sadece çok uzun paragrafları karakter limitine göre keser.
+        """
         chunks = []
-        start = 0
-        text_len = len(text)
-        while start < text_len:
-            end = start + chunk_size
-            if end < text_len:
-                # Kelime ortasından bölmemek için boşluk ara
-                while end > start and text[end] != " ": 
-                    end -= 1
-            if end == start: 
-                end = start + chunk_size
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            start = end - overlap
+        # Metni önce doğal paragraflarına ayır
+        paragraflar = re.split(r'\n\s*\n', text)
+        
+        guncel_chunk = ""
+        for paragraf in paragraflar:
+            paragraf = paragraf.strip()
+            if not paragraf:
+                continue
+                
+            # Eğer tek bir paragraf limitimizden çok daha uzunsa, onu güvenli noktalardan böl
+            if len(paragraf) > max_chunk_size:
+                # Önce eldeki birikmişi listeye at
+                if guncel_chunk:
+                    chunks.append(guncel_chunk.strip())
+                    guncel_chunk = ""
+                
+                # Uzun paragrafı nokta veya boşluklardan (cümle sonlarından) bölerek ekle
+                start = 0
+                while start < len(paragraf):
+                    end = start + max_chunk_size
+                    if end < len(paragraf):
+                        # Nokta veya boşluktan bölmeye çalış (kelimeyi ortadan bölmemek için)
+                        while end > start and paragraf[end] not in [".", " ", "\n"]:
+                            end -= 1
+                        if end == start: # Güvenli yer bulamazsa mecburen zorla böl
+                            end = start + max_chunk_size
+                    chunks.append(paragraf[start:end].strip())
+                    start = end - overlap
+            else:
+                # Paragrafı güncel chunk'a ekle (eğer limiti aşmıyorsa)
+                if len(guncel_chunk) + len(paragraf) + 2 <= max_chunk_size:
+                    guncel_chunk += "\n\n" + paragraf if guncel_chunk else paragraf
+                else:
+                    # Sınır aşıldıysa, öncekini listeye ekle, yeniye temiz başla
+                    chunks.append(guncel_chunk.strip())
+                    guncel_chunk = paragraf
+                    
+        # Döngü bittiğinde elde kalan son parçayı da listeye ekle
+        if guncel_chunk:
+            chunks.append(guncel_chunk.strip())
+            
         return chunks
 
     # ========================================
