@@ -164,5 +164,5 @@ async def validate_document_endpoint(req: ValidatorRequest):
 if __name__ == "__main__":
     import uvicorn
     # Doğrudan python agent_api.py ile çalıştırmak isterseniz
-    print("🚀 LangGraph API Sunucusu başlatılıyor... (http://localhost:8001)")
+    print("🚀 LangGraph API Sunucusu başlatılıyor... (http://localhost:8000)")
     uvicorn.run("agent_api:app", host="0.0.0.0", port=8001, reload=True)
