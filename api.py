@@ -1,4 +1,5 @@
 import os
+import sys
 from dotenv import load_dotenv
 
 # .env dosyasını en başta yüklüyoruz
@@ -31,7 +32,7 @@ from agent.web_searcher import WebSearcher
 from agent.task_extractor import TaskExtractor
 
 # --- OPENAI ENTEGRASYONU ---
-from openai import OpenAI
+from openai import OpenAI, RateLimitError, AuthenticationError, APITimeoutError
 
 # --- DİĞER KÜTÜPHANELER ---
 import aiofiles
@@ -101,6 +102,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ─── Global Exception Handler ────────────────────────────────────────────────
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logger.error(f"Yakalanmamış hata [{request.method} {request.url}]: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"error": True, "message": str(exc), "code": 500}
+    )
+
 ## mobilden gelen ping istekleri için endpoint --
 @app.get("/")
 def read_root():
@@ -109,78 +120,49 @@ def read_root():
 @app.on_event("startup")
 async def startup_event():
     logger.info("🎬 SİSTEM BAŞLATILIYOR...")
-    state.ocr_reader = easyocr.Reader(['tr', 'en'], gpu=False)
-    state.embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-    
-    state.chroma_client = chromadb.PersistentClient(path=state.db_path)
-    if state.chroma_client is not None:
+    try:
+        state.ocr_reader = easyocr.Reader(['tr', 'en'], gpu=False)
+        logger.info("✅ EasyOCR yüklendi.")
+    except Exception as e:
+        logger.critical(f"EasyOCR yüklenemedi: {e}")
+        sys.exit(1)
+
+    try:
+        state.embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+        logger.info("✅ Embedding modeli yüklendi.")
+    except Exception as e:
+        logger.critical(f"Embedding modeli yüklenemedi: {e}")
+        sys.exit(1)
+
+    try:
+        state.chroma_client = chromadb.PersistentClient(path=state.db_path)
         state.collection = state.chroma_client.get_or_create_collection(
             name="hukuk_dokumanlari",
             embedding_function=MyEmbeddingFunction(state.embedding_model),
             metadata={"hnsw:space": "cosine"}
         )
-        logger.info(f"✅ SİSTEM HAZIR. Koleksiyondaki belge sayısı: {state.collection.count() if state.collection else 0}")
-    else:
-        logger.warning("⚠️ ChromaDB Client başlatılamadı.")
+        logger.info(f"✅ SİSTEM HAZIR. Koleksiyondaki belge sayısı: {state.collection.count()}")
+    except Exception as e:
+        logger.critical(f"ChromaDB başlatılamadı: {e} — Sunucu kapatılıyor.")
+        sys.exit(1)
 
 # ==========================================
 # 1. OCR GÖRÜNTÜ İŞLEME MANTIĞI (Senin Kodun)
 # ==========================================
-def goruntu_isleyerek_oku(image_bytes):
+def goruntu_isleyerek_oku(image_bytes) -> dict:
     """
-    ocr_engine.py içindeki mantığın aynısı.
-    OpenCV ile gürültü temizler ve okur.
+    ocr_engine.py'deki mantığı kullanarak görüntüyü okur.
+    Returns: {"text": str, "confidence": float, "warning": str|None}
     """
+    from ocr_engine import ocr_ile_oku as _ocr_ile_oku
+    logger.info("Görüntü OCR işlemi başlatılıyor (goruntu_isleyerek_oku).")
     try:
-        # Byte'tan OpenCV formatına çevir
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if img is None: return ""
-
-        # Gri ton
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        # Blur (Gürültü azaltma)
-        blur = cv2.GaussianBlur(gray, (7,7), 0)
-        # Threshold (Siyah-Beyaz netleştirme)
-        thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-        
-        # Metin bloklarını genişlet
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 2))
-        dilate = cv2.dilate(thresh, kernel, iterations=1)
-        
-        # Konturları bul
-        cnts = cv2.findContours(dilate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cnts = cnts[0] if len(cnts) == 2 else cnts[1]
-        
-        # Yukarıdan aşağıya sırala
-        cnts = sorted(cnts, key=lambda x: cv2.boundingRect(x)[1])
-
-        bulunan_metinler = []
-        for c in cnts:
-            if cv2.contourArea(c) < 500: continue
-            x, y, w, h = cv2.boundingRect(c)
-            if h > w: continue # Dikey gürültüleri atla
-
-            roi = img[y:y+h, x:x+w]
-            try:
-                # EasyOCR ile parça parça oku
-                if state.ocr_reader is not None:
-                    okunan = state.ocr_reader.readtext(roi, detail=0)
-                    if okunan:
-                        bulunan_metinler.append(" ".join(str(o) for o in okunan))
-            except: pass
-        
-        # Eğer OpenCV yöntemiyle hiçbir şey çıkmazsa, resmi düz okumayı dene (Fallback)
-        if not bulunan_metinler and state.ocr_reader is not None:
-            okunan = state.ocr_reader.readtext(img, detail=0)
-            return " ".join(str(o) for o in okunan)
-
-        return "\n".join(bulunan_metinler)
-        
+        result = _ocr_ile_oku(image_bytes)
+        logger.info(f"OCR tamamlandı — güven: {result.get('confidence', 0):.2f}, uyarı: {result.get('warning')}")
+        return result
     except Exception as e:
         logger.error(f"OCR İşleme Hatası: {e}")
-        return ""
+        return {"text": "", "confidence": 0.0, "warning": f"OCR hatası: {str(e)}"}
 
 # ==========================================
 # 2. PDF PARÇALAMA MANTIĞI
@@ -287,12 +269,18 @@ async def yukle(file: UploadFile = File(...)):
         logger.error(f"Yükleme Hatası: {e}")
         return JSONResponse(500, {"detail": str(e)})
 
+# Cosine similarity minimum eşiği — bu değerin altındaki chunk'lar atılır
+RAG_COSINE_ESIGI = 0.35
+
 @app.post("/sor")
 async def soru_sor(req: SoruModel):
     if not client: raise HTTPException(500, "OpenAI API Key yok!")
-    
+
     soru = req.soru.strip()
-    if not soru or len(soru) < 3: return {"cevap": "Geçersiz soru.", "kaynaklar": []}
+    if not soru or len(soru) < 3:
+        return {"cevap": "Geçersiz soru.", "kaynaklar": []}
+
+    logger.info(f"/sor isteği: '{soru[:80]}...' (top_k={req.top_k})")
 
     try:
         if state.collection is None:
@@ -301,57 +289,78 @@ async def soru_sor(req: SoruModel):
         # Vektör Arama
         results = state.collection.query(query_texts=[soru], n_results=req.top_k)
         if not results.get('documents') or not results['documents'][0]:
-             return {"cevap": "Bilgi bulunamadı.", "kaynaklar": []}
+            return {"cevap": "Bu soruyla ilgili yeterli bilgi bulunamadı.", "kaynaklar": []}
 
-        # Filtreleme
-        raw_docs: List[str] = list(results['documents'][0]) if results.get('documents') and results['documents'] else []
-        raw_metas: List[Dict[str, Any]] = list(results['metadatas'][0]) if results.get('metadatas') and results['metadatas'] else [] # type: ignore
-        raw_dists: List[float] = list(results['distances'][0]) if results.get('distances') and results['distances'] else [] # type: ignore
-        
+        raw_docs: List[str] = list(results['documents'][0])
+        raw_metas: List[Dict[str, Any]] = list(results['metadatas'][0])  # type: ignore
+        raw_dists: List[float] = list(results['distances'][0])  # type: ignore
+
         if not raw_dists:
-            return {"cevap": "Uzaklık bilgisi bulunamadı.", "kaynaklar": []}
+            return {"cevap": "Bu soruyla ilgili yeterli bilgi bulunamadı.", "kaynaklar": []}
 
-        en_iyi_skor = 1 - raw_dists[0]
-        dinamik_esik = en_iyi_skor * 0.85 if en_iyi_skor > 0.75 else max(en_iyi_skor * 0.70, 0.30)
-
+        # ── Reranking: cosine similarity >= 0.35 olanları tut ─────────────────
         combined = []
         for i in range(len(raw_docs)):
-            doc = raw_docs[i]
-            meta = raw_metas[i] if len(raw_metas) > i else {}
-            dist = raw_dists[i] if len(raw_dists) > i else 1.0
-            if (1 - dist) >= dinamik_esik:
-                combined.append({"text": doc, "meta": meta})
+            score = 1.0 - (raw_dists[i] if i < len(raw_dists) else 1.0)
+            if score >= RAG_COSINE_ESIGI:
+                combined.append({
+                    "text": raw_docs[i],
+                    "meta": raw_metas[i] if i < len(raw_metas) else {},
+                    "score": score
+                })
 
-        if not combined: return {"cevap": "Yeterli eşleşme yok.", "kaynaklar": []}
+        logger.info(f"Reranking sonucu: {len(combined)}/{len(raw_docs)} chunk eşiği geçti (eşik={RAG_COSINE_ESIGI}).")
 
-        # Context Hazırla
+        if not combined:
+            return {"cevap": "Bu soruyla ilgili yeterli bilgi bulunamadı.", "kaynaklar": []}
+
+        # Skor'a göre (yüksekten düşüğe) sırala, ardından chunk_index'e göre normalize et
         combined.sort(key=lambda x: int(cast(dict, x["meta"]).get("chunk_index", 9999)) if isinstance(x["meta"], dict) else 9999)
         ai_baglam = "\n---\n".join([str(item['text']) for item in combined])
         kaynaklar = [
-            {"source": str(cast(dict, c["meta"]).get("dosya", "")), "page": int(cast(dict, c["meta"]).get("sayfa", 0)), "type": str(cast(dict, c["meta"]).get("madde_no", ""))}
+            {
+                "source": str(cast(dict, c["meta"]).get("dosya", "")),
+                "page": int(cast(dict, c["meta"]).get("sayfa", 0)),
+                "type": str(cast(dict, c["meta"]).get("madde_no", "")),
+                "score": round(c.get("score", 0.0), 4)
+            }
             for c in combined if isinstance(c["meta"], dict)
         ]
 
         # ChatGPT
-        resp = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "Sen hukuk asistanısın. Bağlamı kullanarak cevapla."},
-                {"role": "user", "content": f"BAĞLAM:\n{ai_baglam}\n\nSORU: {soru}"}
-            ],
-            temperature=0.3
-        )
-        return {"cevap": resp.choices[0].message.content, "kaynaklar": kaynaklar}
+        logger.info("OpenAI GPT-4o çağrısı yapılıyor...")
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Sen hukuk asistanısın. Bağlamı kullanarak cevapla."},
+                    {"role": "user", "content": f"BAĞLAM:\n{ai_baglam}\n\nSORU: {soru}"}
+                ],
+                temperature=0.3
+            )
+            logger.info("GPT-4o yanıtı alındı.")
+            return {"cevap": resp.choices[0].message.content, "kaynaklar": kaynaklar}
+        except RateLimitError:
+            logger.error("OpenAI rate limit aşıldı.")
+            raise HTTPException(429, "OpenAI rate limit aşıldı. Lütfen bekleyin.")
+        except AuthenticationError:
+            logger.error("OpenAI kimlik doğrulama hatası.")
+            raise HTTPException(401, "OpenAI API anahtarı geçersiz.")
+        except APITimeoutError:
+            logger.error("OpenAI API zaman aşımı.")
+            raise HTTPException(504, "OpenAI yanıt vermedi. Lütfen tekrar deneyin.")
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Hata: {e}")
+        logger.error(f"/sor hatası: {e}", exc_info=True)
         raise HTTPException(500, str(e))
 
 # --- EKLENEN KISIM: FOTOĞRAF ENDPOINT ---
 @app.post("/sor/fotograf")
 async def foto_analiz(file: UploadFile = File(...), soru: str = Form("Bu belgede ne yazıyor?")):
     """
-    Frontend'den gelen fotoğrafı okur ve ChatGPT'ye yorumlatır.
+    Frontend'den gelen fotoğrafı OCR ile okur ve ChatGPT'ye yorumlatır.
     """
     if not client: raise HTTPException(500, "OpenAI API Key yok!")
 
@@ -359,51 +368,67 @@ async def foto_analiz(file: UploadFile = File(...), soru: str = Form("Bu belgede
     logger.info(f"[{req_id}] 📷 Fotoğraf Analizi İsteği: {file.filename}")
 
     try:
-        # 1. Dosyayı Oku
         contents = await file.read()
-        
-        # 2. OCR İşlemi (OpenCV + EasyOCR)
-        # Thread içinde çalıştırıyoruz ki sunucuyu kilitlemesin
-        okunan_metin = await run_in_threadpool(goruntu_isleyerek_oku, contents)
+
+        # OCR — Thread içinde çalıştır
+        ocr_result = await run_in_threadpool(goruntu_isleyerek_oku, contents)
+
+        okunan_metin = ocr_result.get("text", "")
+        ocr_guven = ocr_result.get("confidence", 0.0)
+        ocr_uyari = ocr_result.get("warning")
+
+        if ocr_uyari:
+            logger.warning(f"[{req_id}] OCR uyarısı: {ocr_uyari}")
 
         if not okunan_metin or len(okunan_metin.strip()) < 5:
             return {
                 "cevap": "Fotoğraftan anlamlı bir metin okunamadı. Lütfen daha net bir fotoğraf yükleyin.",
-                "okunan_ham_veri": ""
+                "okunan_ham_veri": "",
+                "ocr_confidence": ocr_guven,
+                "ocr_warning": ocr_uyari
             }
-            
-        logger.info(f"[{req_id}] ✅ OCR Başarılı. {len(okunan_metin)} karakter okundu.")
 
-        # 3. ChatGPT Yorumlaması
+        logger.info(f"[{req_id}] ✅ OCR Başarılı. {len(okunan_metin)} karakter, güven: {ocr_guven:.2f}")
+
         prompt = f"""
-        Aşağıda bir belgenin fotoğrafından OCR (Optik Karakter Tanıma) ile okunmuş metin var.
+        Aşağıda bir belgenin fotoğrafından OCR ile okunmuş metin var.
         Bu metni kullanarak kullanıcı sorusunu cevapla. Metindeki olası harf hatalarını düzelt.
-        
+
         OCR METNİ:
         {okunan_metin}
-        
+
         KULLANICI SORUSU:
         {soru}
         """
 
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "Sen OCR hatalarını düzelten zeki bir asistansın."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.4
-        )
-        
-        ai_cevabi = response.choices[0].message.content
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Sen OCR hatalarını düzelten zeki bir asistansın."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.4
+            )
+            ai_cevabi = response.choices[0].message.content
+        except RateLimitError:
+            raise HTTPException(429, "OpenAI rate limit aşıldı.")
+        except AuthenticationError:
+            raise HTTPException(401, "OpenAI API anahtarı geçersiz.")
+        except APITimeoutError:
+            raise HTTPException(504, "OpenAI yanıt vermedi. Lütfen tekrar deneyin.")
 
         return {
             "cevap": ai_cevabi,
-            "okunan_ham_veri": okunan_metin # Frontend isterse ham halini de gösterebilir
+            "okunan_ham_veri": okunan_metin,
+            "ocr_confidence": ocr_guven,
+            "ocr_warning": ocr_uyari
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Fotoğraf Analiz Hatası: {e}")
+        logger.error(f"[{req_id}] Fotoğraf Analiz Hatası: {e}", exc_info=True)
         raise HTTPException(500, f"İşlem başarısız: {str(e)}")
 
 # --- NOT YÖNETİMİ ---

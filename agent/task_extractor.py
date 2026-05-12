@@ -1,18 +1,24 @@
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
+import logging
+import os
 from typing import List, Optional
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv, find_dotenv
 from pathlib import Path
-import os
+from openai import RateLimitError, AuthenticationError, APITimeoutError
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+logger = logging.getLogger("TaskExtractor")
 
 load_dotenv(find_dotenv(), override=True)
 
 api_key = os.getenv("OPENAI_API_KEY")
 if api_key:
-    print(f"✅ API Anahtarı başarıyla yüklendi! (Sonu: ...{api_key[-4:]})\n")
+    logger.info(f"API Anahtarı başarıyla yüklendi! (Sonu: ...{api_key[-4:]})")
 else:
-    print("❌ DİKKAT: .env dosyası veya içindeki OPENAI_API_KEY bulunamadı!\n")
+    logger.warning("OPENAI_API_KEY bulunamadı! .env dosyanızı kontrol edin.")
+
 
 # --- ÇIKTI FORMATI ---
 class Gorev(BaseModel):
@@ -20,19 +26,20 @@ class Gorev(BaseModel):
     sorumlu: Optional[str] = Field(description="Sorumlu kişi veya kurum, yoksa null")
     son_tarih: Optional[str] = Field(description="Son tarih, yoksa null")
 
+
 class CikartmaSonucu(BaseModel):
     gorevler: List[Gorev] = Field(description="Metinden çıkarılan görevler listesi")
     onemli_tarihler: List[str] = Field(description="Metinde geçen önemli tarihler")
     konular: List[str] = Field(description="Metnin ana konuları, ilgi alanları")
 
+
 # --- LLM KURULUMU ---
 llm = ChatOpenAI(
     model="gpt-4o",
-    api_key=api_key, # Artık os.getenv ile güvenle alıyoruz
+    api_key=api_key,
     temperature=0
 )
 
-# Structured output — LLM direkt Pydantic objesi döndürür
 structured_llm = llm.with_structured_output(CikartmaSonucu)
 
 # --- PROMPT ---
@@ -50,25 +57,58 @@ Eğer bir bilgi yoksa null bırak."""),
 # --- CHAIN ---
 chain = prompt | structured_llm
 
+
+# --- RETRY DECORATOR ---
+@retry(
+    retry=retry_if_exception_type((RateLimitError, APITimeoutError)),
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    reraise=True
+)
+def _llm_cagir(metin: str) -> CikartmaSonucu:
+    """Retry decorator'lı LLM çağrısı."""
+    logger.debug(f"LLM çağrısı yapılıyor (metin uzunluğu: {len(metin)} karakter).")
+    return chain.invoke({"metin": metin})
+
+
 # --- ANA FONKSİYON ---
 def metinden_cikar(metin: str) -> CikartmaSonucu:
     """OCR'dan gelen metni alır, görev ve tarihleri çıkarır."""
-    return chain.invoke({"metin": metin})
+    logger.info(f"Metin analizi başlatılıyor ({len(metin)} karakter).")
+    try:
+        sonuc = _llm_cagir(metin)
+        logger.info(f"Analiz tamamlandı: {len(sonuc.gorevler)} görev, {len(sonuc.onemli_tarihler)} tarih bulundu.")
+        return sonuc
+    except RateLimitError:
+        logger.error("OpenAI rate limit aşıldı — boş sonuç dönülüyor.")
+        return CikartmaSonucu(gorevler=[], onemli_tarihler=[], konular=[])
+    except AuthenticationError:
+        logger.error("OpenAI kimlik doğrulama hatası — API anahtarını kontrol edin.")
+        return CikartmaSonucu(gorevler=[], onemli_tarihler=[], konular=[])
+    except APITimeoutError:
+        logger.error("OpenAI API zaman aşımı — boş sonuç dönülüyor.")
+        return CikartmaSonucu(gorevler=[], onemli_tarihler=[], konular=[])
+    except Exception as e:
+        logger.error(f"Görev çıkarımında beklenmeyen hata: {e}", exc_info=True)
+        return CikartmaSonucu(gorevler=[], onemli_tarihler=[], konular=[])
+
 
 # --- TEST ---
 if __name__ == "__main__":
-    # Mock OCR metni — gerçek OCR beklemeden test ediyoruz
+    import logging as _logging
+    _logging.basicConfig(level=_logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s — %(message)s')
+
     test_metni = """
     KOSGEB Girişimcilik Destek Programı Başvuru Duyurusu
-    
+
     Başvuru tarihi: 15 Mart 2025
     Son başvuru tarihi: 30 Nisan 2025
-    
+
     Başvuru sahiplerinin aşağıdaki belgeleri teslim etmesi gerekmektedir:
     - İş planı hazırlanacak (Sorumlu: Başvuru sahibi)
     - Nüfus cüzdanı fotokopisi eklenecek
     - Mali tablolar muhasebeci onaylı olacak (Sorumlu: Mali müşavir)
-    
+
     Değerlendirme toplantısı: 15 Mayıs 2025
     Sonuç açıklaması: 1 Haziran 2025
     """
@@ -88,30 +128,31 @@ if __name__ == "__main__":
     for k in sonuc.konular:
         print(f"  - {k}")
 
-# --- CLASS YAPISI (Seçenek 2'ye uygun şekilde 'api.py' içinde TaskExtractor.extract() çağrısı için) ---
+
+# --- CLASS YAPISI ---
 class TaskExtractor:
     def extract(self, text: str) -> list:
+        logger.info("TaskExtractor.extract() çağrıldı.")
         try:
             cikarilan_veri = metinden_cikar(text)
             findings = []
-            
-            # Görevleri ekle
+
             for gorev in cikarilan_veri.gorevler:
                 findings.append({
                     "title": gorev.baslik,
                     "date": gorev.son_tarih if gorev.son_tarih else "Belirtilmemiş"
                 })
-                
-            # Görev yoksa ama önemli tarihler varsa onları da bulgu olarak ekle
+
             if not findings and cikarilan_veri.onemli_tarihler:
                 for tarih in cikarilan_veri.onemli_tarihler:
                     findings.append({
                         "title": "İlgili Etkinlik/Tarih",
                         "date": tarih
                     })
-                    
-            # Eğer hiçbir şey çıkmazsa veya hata olursa boş liste
+
+            logger.info(f"TaskExtractor: {len(findings)} bulgu çıkarıldı.")
             return findings
+
         except Exception as e:
-            print(f"Görev çıkarma hatası: {e}")
+            logger.error(f"TaskExtractor.extract() hatası: {e}", exc_info=True)
             return []

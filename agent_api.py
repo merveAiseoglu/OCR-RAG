@@ -1,45 +1,55 @@
 import os
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
-
-# Çevre değişkenlerini yükleyelim (graph kurulumlarında gerekiyor olabilir)
 from dotenv import load_dotenv, find_dotenv
+from openai import RateLimitError, AuthenticationError, APITimeoutError
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+
 load_dotenv(find_dotenv(), override=True)
 
-# LangGraph akışlarımızı (Agent'ları) içe aktaralım
-# Agent 1: Metinden görev çıkaran akış (graph_builder.py)
-from agent.graph_builder import graph as task_graph, AgentState
-from agent.task_extractor import CikartmaSonucu # Çıktıyı modellemek için yararlı olabilir
-
-# Agent 2: Sohbet geçmişinden ilgi alanı çıkarıp arayan proaktif akış (proactive_graph.py)
+from agent.graph_builder import graph as task_graph, AgentState, graph_invoke_with_timeout
+from agent.task_extractor import CikartmaSonucu
 from agent.proactive_graph import graph as proactive_graph, ProactiveState
-
-# Agent 3: Çapraz Doküman Denetçisi (cross_document_auditor.py)
 from agent.cross_document_auditor import auditor_app
-
-# Agent 4: Dinamik Eksik Bilgi Denetçisi (missing_info_agent.py)
 from agent.missing_info_agent import validator_app
 
-# FastAPI uygulamasını başlatalım
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s — %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger("AgentAPI")
+
 app = FastAPI(
-    title="LangGraph Agent API", 
-    version="1.0",
+    title="LangGraph Agent API",
+    version="2.0",
     description="LangGraph akışlarını dışa açan FastAPI sunucusu"
 )
 
-# CORS Ayarları (Web arayüzünden doğrudan erişim için gerekli)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Prod ortamında spesifik origin'ler verilmeli (örn: http://localhost:3000)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Pydantic Modelleri (Gelen İstekler İçin) ---
 
+# ─── Global Exception Handler ────────────────────────────────────────────────
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logger.error(f"Yakalanmamış hata: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"error": True, "message": str(exc), "code": 500}
+    )
+
+
+# ─── Pydantic Modelleri ───────────────────────────────────────────────────────
 class TaskRequest(BaseModel):
     metin: str
 
@@ -53,116 +63,159 @@ class AuditorRequest(BaseModel):
 class ValidatorRequest(BaseModel):
     extracted_text: str
 
-# --- Endpoints ---
 
+# ─── Endpoints ────────────────────────────────────────────────────────────────
 @app.post("/agent/task-extract")
 async def extract_task_endpoint(req: TaskRequest):
-    """
-    Kullanıcının girdiği metinden görevleri (task) çıkartan langgraph akışını tetikler.
-    """
+    logger.info(f"/agent/task-extract isteği alındı ({len(req.metin)} karakter).")
     try:
-        # graph_builder.py içindeki baslangic_durumu formatı
-        baslangic_durumu = {
+        baslangic = {
             "metin": req.metin,
             "cikarim_sonucu": None,
-            "islem_durumu": "BAŞLADI"
+            "islem_durumu": "BAŞLADI",
+            "error": None
         }
-        
-        # LangGraph invoke() senkron çalışır. Eğer ağır bloklayan bir akış ise
-        # fastapi.concurrency.run_in_threadpool kullanılabilir.
-        tamamlanmis_durum = task_graph.invoke(baslangic_durumu)
-        
-        # cikarim_sonucu bir Pydantic modeli olduğu için serialize etmek için dict() alabiliriz
-        sonuc_model = tamamlanmis_durum.get("cikarim_sonucu")
+        tamamlanmis = graph_invoke_with_timeout(baslangic, timeout=30)
+
+        if tamamlanmis.get("error"):
+            logger.warning(f"Agent hata ile tamamlandı: {tamamlanmis['error']}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": True, "message": tamamlanmis["error"], "code": 500}
+            )
+
+        sonuc_model = tamamlanmis.get("cikarim_sonucu")
         sonuc_dict = sonuc_model.dict() if sonuc_model else None
-        
+        logger.info("Görev çıkarımı başarıyla tamamlandı.")
         return {
             "success": True,
-            "islem_durumu": tamamlanmis_durum.get("islem_durumu"),
+            "islem_durumu": tamamlanmis.get("islem_durumu"),
             "data": sonuc_dict
         }
+    except TimeoutError as e:
+        logger.error(f"Timeout: {e}")
+        raise HTTPException(status_code=504, detail=str(e))
+    except RateLimitError:
+        logger.error("OpenAI rate limit aşıldı.")
+        raise HTTPException(status_code=429, detail="OpenAI rate limit aşıldı. Lütfen bekleyin.")
+    except AuthenticationError:
+        logger.error("OpenAI kimlik doğrulama hatası.")
+        raise HTTPException(status_code=401, detail="OpenAI API kimlik hatası.")
+    except APITimeoutError:
+        logger.error("OpenAI API zaman aşımı.")
+        raise HTTPException(status_code=504, detail="OpenAI API zaman aşımı.")
     except Exception as e:
+        logger.error(f"Görev çıkarımı hatası: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Görev çıkarımı sırasında hata: {str(e)}")
 
 
 @app.post("/agent/proactive-search")
 async def proactive_search_endpoint(req: ProactiveRequest):
-    """
-    Sohbet geçmişini alıp kullanıcının ilgi alanlarını çıkaran
-    ve eğer ilgi alanı varsa web'de arayıp sonuç döndüren LangGraph akışını tetikler.
-    """
+    logger.info(f"/agent/proactive-search isteği alındı ({len(req.sohbet_gecmisi)} mesaj).")
     try:
-        # proactive_graph.py içindeki baslangic_durumu formatı
-        baslangic_durumu = {
+        baslangic = {
             "sohbet_gecmisi": req.sohbet_gecmisi,
             "ilgi_alanlari": [],
-            "arama_sonuclari": {}
+            "arama_sonuclari": {},
+            "error": None
         }
-        
-        sonuc = proactive_graph.invoke(baslangic_durumu)
-        
+        sonuc = proactive_graph.invoke(baslangic)
+        if sonuc.get("error"):
+            logger.warning(f"Proaktif arama hata ile tamamlandı: {sonuc['error']}")
+        logger.info("Proaktif arama tamamlandı.")
         return {
             "success": True,
             "ilgi_alanlari": sonuc.get("ilgi_alanlari", []),
-            "arama_sonuclari": sonuc.get("arama_sonuclari", {})
+            "arama_sonuclari": sonuc.get("arama_sonuclari", {}),
+            "error": sonuc.get("error")
         }
+    except RateLimitError:
+        raise HTTPException(status_code=429, detail="OpenAI rate limit aşıldı.")
+    except AuthenticationError:
+        raise HTTPException(status_code=401, detail="OpenAI API kimlik hatası.")
+    except APITimeoutError:
+        raise HTTPException(status_code=504, detail="OpenAI API zaman aşımı.")
     except Exception as e:
+        logger.error(f"Proaktif arama hatası: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Proaktif arama sırasında hata: {str(e)}")
 
 
 @app.post("/agent/audit-documents")
 async def audit_documents_endpoint(req: AuditorRequest):
-    """
-    İki dokümanı karşılaştırarak farklılıkları, eksiklikleri ve riskleri raporlayan LangGraph akışını tetikler.
-    """
+    logger.info("/agent/audit-documents isteği alındı.")
     try:
         initial_state = {
             "doc1_text": req.doc1_text,
             "doc2_text": req.doc2_text,
             "comparison_results": {},
-            "executive_summary": ""
+            "executive_summary": "",
+            "error": None
         }
-        
-        # ainvoke() ile asenkron grafiği çalıştır
         final_state = await auditor_app.ainvoke(initial_state)
-        
+
+        if final_state.get("error"):
+            logger.warning(f"Denetim hata ile tamamlandı: {final_state['error']}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": True, "message": final_state["error"], "code": 500}
+            )
+
+        logger.info("Doküman denetimi başarıyla tamamlandı.")
         return {
             "success": True,
             "comparison_results": final_state.get("comparison_results", {}),
             "executive_summary": final_state.get("executive_summary", "")
         }
+    except RateLimitError:
+        raise HTTPException(status_code=429, detail="OpenAI rate limit aşıldı.")
+    except AuthenticationError:
+        raise HTTPException(status_code=401, detail="OpenAI API kimlik hatası.")
+    except APITimeoutError:
+        raise HTTPException(status_code=504, detail="OpenAI API zaman aşımı.")
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Doküman denetimi sırasında hata oluştu: {str(e)}")
+        logger.error(f"Doküman denetimi hatası: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Doküman denetimi sırasında hata: {str(e)}")
 
 
 @app.post("/agent/validate-document")
 async def validate_document_endpoint(req: ValidatorRequest):
-    """
-    Belgeden çıkarılan metni analiz ederek doküman türünü belirler ve eksik alanları raporlayan LangGraph akışını tetikler.
-    """
+    logger.info("/agent/validate-document isteği alındı.")
     try:
         initial_state = {
             "extracted_text": req.extracted_text,
-            "validation_results": {}
+            "validation_results": {},
+            "error": None
         }
-        
-        # ainvoke() ile asenkron grafiği çalıştır
         final_state = await validator_app.ainvoke(initial_state)
-        
+
+        if final_state.get("error"):
+            logger.warning(f"Doğrulama hata ile tamamlandı: {final_state['error']}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": True, "message": final_state["error"], "code": 500}
+            )
+
+        logger.info("Belge doğrulaması başarıyla tamamlandı.")
         return {
             "success": True,
             "validation_results": final_state.get("validation_results", {})
         }
+    except RateLimitError:
+        raise HTTPException(status_code=429, detail="OpenAI rate limit aşıldı.")
+    except AuthenticationError:
+        raise HTTPException(status_code=401, detail="OpenAI API kimlik hatası.")
+    except APITimeoutError:
+        raise HTTPException(status_code=504, detail="OpenAI API zaman aşımı.")
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Doküman doğrulaması sırasında hata oluştu: {str(e)}")
+        logger.error(f"Belge doğrulama hatası: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Belge doğrulaması sırasında hata: {str(e)}")
 
 
 if __name__ == "__main__":
     import uvicorn
-    # Doğrudan python agent_api.py ile çalıştırmak isterseniz
-    print("🚀 LangGraph API Sunucusu başlatılıyor... (http://localhost:8000)")
+    logger.info("🚀 LangGraph Agent API başlatılıyor (http://localhost:8001)")
     uvicorn.run("agent_api:app", host="0.0.0.0", port=8001, reload=True)

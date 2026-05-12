@@ -1,4 +1,5 @@
 import os
+import logging
 import chromadb
 from sentence_transformers import SentenceTransformer
 from pdf_reader import PDFProcessor
@@ -6,6 +7,8 @@ import uuid
 import json
 import re
 import hashlib
+
+logger = logging.getLogger("DocumentProcessor")
 
 class DocumentProcessor:
     def __init__(self, persist_directory="chroma_db"):
@@ -111,51 +114,55 @@ class DocumentProcessor:
     def chunk_text(self, text, max_chunk_size=800, overlap=100):
         """
         OPTİMİZE EDİLMİŞ CHUNKING:
-        Metni rastgele karakter sayısına göre değil, LLM'in daha iyi anlaması için 
-        önce paragraflara (\n\n) böler. Sadece çok uzun paragrafları karakter limitine göre keser.
+        Metni önce doğal paragraflarına (\n\n) böler.
+        Uzun paragrafları karakter limitine göre keserken 'overlap' kadar
+        karakter önceki chunk'tan taşınır — bağlam kopukluğunu önler.
         """
         chunks = []
-        # Metni önce doğal paragraflarına ayır
         paragraflar = re.split(r'\n\s*\n', text)
-        
+
         guncel_chunk = ""
         for paragraf in paragraflar:
             paragraf = paragraf.strip()
             if not paragraf:
                 continue
-                
-            # Eğer tek bir paragraf limitimizden çok daha uzunsa, onu güvenli noktalardan böl
+
             if len(paragraf) > max_chunk_size:
-                # Önce eldeki birikmişi listeye at
+                # Eldeki birikmiş chunk'ı kaydet
                 if guncel_chunk:
                     chunks.append(guncel_chunk.strip())
                     guncel_chunk = ""
-                
-                # Uzun paragrafı nokta veya boşluklardan (cümle sonlarından) bölerek ekle
+
                 start = 0
                 while start < len(paragraf):
                     end = start + max_chunk_size
                     if end < len(paragraf):
-                        # Nokta veya boşluktan bölmeye çalış (kelimeyi ortadan bölmemek için)
-                        while end > start and paragraf[end] not in [".", " ", "\n"]:
-                            end -= 1
-                        if end == start: # Güvenli yer bulamazsa mecburen zorla böl
-                            end = start + max_chunk_size
-                    chunks.append(paragraf[start:end].strip())
-                    start = end - overlap
+                        # Güvenli bölme noktası bul (nokta/boşluk)
+                        bak = end
+                        while bak > start and paragraf[bak] not in (".", " ", "\n"):
+                            bak -= 1
+                        if bak > start:
+                            end = bak
+                    chunk_text = paragraf[start:end].strip()
+                    if chunk_text:
+                        chunks.append(chunk_text)
+                        logger.debug(f"Uzun paragraf bölündü: karakter {start}–{end}")
+                    # Bir sonraki chunk 'overlap' kadar geri başlar
+                    start = end - overlap if end - overlap > start else end
             else:
-                # Paragrafı güncel chunk'a ekle (eğer limiti aşmıyorsa)
                 if len(guncel_chunk) + len(paragraf) + 2 <= max_chunk_size:
                     guncel_chunk += "\n\n" + paragraf if guncel_chunk else paragraf
                 else:
-                    # Sınır aşıldıysa, öncekini listeye ekle, yeniye temiz başla
-                    chunks.append(guncel_chunk.strip())
-                    guncel_chunk = paragraf
-                    
-        # Döngü bittiğinde elde kalan son parçayı da listeye ekle
+                    if guncel_chunk:
+                        chunks.append(guncel_chunk.strip())
+                    # Yeni chunk'ı önceki chunk'ın son 'overlap' karakteriyle başlat
+                    overlap_baslangic = guncel_chunk[-overlap:] if len(guncel_chunk) >= overlap else guncel_chunk
+                    guncel_chunk = (overlap_baslangic + "\n\n" + paragraf).strip() if overlap_baslangic else paragraf
+
         if guncel_chunk:
             chunks.append(guncel_chunk.strip())
-            
+
+        logger.debug(f"chunk_text tamamlandı: {len(chunks)} parça üretildi.")
         return chunks
 
     # ========================================
