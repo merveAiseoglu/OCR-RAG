@@ -274,9 +274,6 @@ async def yukle(file: UploadFile = File(...)):
         logger.error(f"Yükleme Hatası: {e}")
         return JSONResponse(500, {"detail": str(e)})
 
-# Cosine similarity minimum eşiği — bu değerin altındaki chunk'lar atılır
-RAG_COSINE_ESIGI = 0.35
-
 @app.post("/sor")
 async def soru_sor(req: SoruModel):
     if not client: raise HTTPException(500, "OpenAI API Key yok!")
@@ -303,18 +300,21 @@ async def soru_sor(req: SoruModel):
         if not raw_dists:
             return {"cevap": "Bu soruyla ilgili yeterli bilgi bulunamadı.", "kaynaklar": []}
 
-        # ── Reranking: cosine similarity >= 0.35 olanları tut ─────────────────
+        en_iyi_skor = 1 - raw_dists[0]
+        dinamik_esik = en_iyi_skor * 0.85 if en_iyi_skor > 0.75 else max(en_iyi_skor * 0.70, 0.30)
+
+        # ── Reranking: dinamik eşik kullanan filtreleme ─────────────────
         combined = []
         for i in range(len(raw_docs)):
             score = 1.0 - (raw_dists[i] if i < len(raw_dists) else 1.0)
-            if score >= RAG_COSINE_ESIGI:
+            if score >= dinamik_esik:
                 combined.append({
                     "text": raw_docs[i],
                     "meta": raw_metas[i] if i < len(raw_metas) else {},
                     "score": score
                 })
 
-        logger.info(f"Reranking sonucu: {len(combined)}/{len(raw_docs)} chunk eşiği geçti (eşik={RAG_COSINE_ESIGI}).")
+        logger.info(f"Reranking sonucu: {len(combined)}/{len(raw_docs)} chunk eşiği geçti (dinamik_esik={dinamik_esik:.4f}).")
 
         if not combined:
             return {"cevap": "Bu soruyla ilgili yeterli bilgi bulunamadı.", "kaynaklar": []}
