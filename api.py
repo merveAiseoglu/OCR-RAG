@@ -5,22 +5,19 @@ from dotenv import load_dotenv
 # .env dosyasını en başta yüklüyoruz
 load_dotenv()
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Union, cast
-import time
 import logging
 import json
 import re
-import math
 import io
-import uuid 
-import shutil
-import numpy as np # Resim işleme için
-import cv2 # OpenCV
+import uuid
+import numpy as np
+import cv2
 import datetime
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -29,7 +26,11 @@ from googleapiclient.discovery import build
 
 # --- AGENT ---
 from agent.web_searcher import WebSearcher
-from agent.task_extractor import TaskExtractor
+from agent.task_extractor import TaskExtractor, CikartmaSonucu
+from agent.graph_builder import graph_invoke_with_timeout, AgentState
+from agent.proactive_graph import graph as proactive_graph, ProactiveState
+from agent.cross_document_auditor import auditor_app
+from agent.missing_info_agent import validator_app
 
 # --- OPENAI ENTEGRASYONU ---
 from openai import OpenAI, RateLimitError, AuthenticationError, APITimeoutError
@@ -56,7 +57,7 @@ else:
 # --- LOGLAMA ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
+    format='%(asctime)s [%(levelname)s] %(name)s — %(message)s',
     datefmt='%H:%M:%S'
 )
 logger = logging.getLogger("OCR_API")
@@ -92,7 +93,11 @@ class AppState:
 
 state = AppState()
 
-app = FastAPI(title="OCR RAG API", version="3.9")
+app = FastAPI(
+    title="OCR RAG API",
+    version="4.0",
+    description="OCR + RAG + LangGraph Agent — Tek sunucu (port 8000)"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -432,17 +437,12 @@ async def foto_analiz(file: UploadFile = File(...), soru: str = Form("Bu belgede
         raise HTTPException(500, f"İşlem başarısız: {str(e)}")
 
 # --- NOT YÖNETİMİ ---
-from fastapi import Header
-
 def get_user_file(user_email: str, filename: str) -> str:
-    # E-postadaki özel karakterleri klasör ismine uygun hale getir
     safe_email = user_email.replace('@', '_').replace('.', '_')
     user_dir = os.path.join("data", safe_email)
     if not os.path.exists(user_dir):
         os.makedirs(user_dir, exist_ok=True)
     return os.path.join(user_dir, filename)
-
-from typing import Optional
 
 class NoteCreate(BaseModel):
     content: str
@@ -657,66 +657,6 @@ async def migrate_guest_data(x_user_email: str = Header(default="default_user"))
         
     return {"status": "success", "message": "Misafir verileri başarıyla hesabınıza aktarıldı." if merged_any else "Aktarılacak veri yoktu."}
 
-# --- BİLDİRİM PANEL KISMI ---
-@app.get("/api/agent/proactive-search")
-async def check_proactive_findings():
-    """
-    GERÇEK: Merve'nin ajanı çalışır, bulduğu veriyi NOTLARA kaydeder ve bildirim döner.
-    """
-    # 1. Merve'nin ajanlarını çalıştırıyoruz
-    searcher = WebSearcher()
-    raw_results = searcher.search("KPSS güncel tarihler 2026")
-    
-    extractor = TaskExtractor()
-    findings = extractor.extract(raw_results)
-
-    bulunanlar_listesi = []
-    
-    # --- NOTLARI YÜKLE (Eğer dosya yoksa boş liste oluştur) ---
-    notes_file = "notes.json"
-    if os.path.exists(notes_file):
-        with open(notes_file, "r", encoding="utf-8") as f:
-            try:
-                current_notes = json.load(f)
-            except:
-                current_notes = []
-    else:
-        current_notes = []
-
-    # 2. Bulguları işle ve Notlara ekle
-    for finding in findings:
-        item_id = uuid.uuid4().hex[:8]
-        mesaj_metni = f"{finding['title']} bulundu! 🚀 Senin için buldum 👋"
-        
-        # Frontend'e gidecek obje
-        new_entry = {
-            "id": item_id,
-            "mesaj": mesaj_metni,
-            "tarih": finding['date'],
-            "tip": "etkinlik"
-        }
-        bulunanlar_listesi.append(new_entry)
-
-        # --- AYNI NOT VAR MI KONTROL ET VE EKLE ---
-        # (Aynı mesajın tekrar tekrar notlara dolmaması için kontrol)
-        if not any(n.get('mesaj') == mesaj_metni for n in current_notes):
-            current_notes.append({
-                "id": item_id,
-                "content": mesaj_metni, # Senin not yapına göre 'content' veya 'mesaj' yapabilirsin
-                "date": finding['date'],
-                "type": "auto-agent"
-            })
-
-    # 3. Güncel notları dosyaya geri yaz
-    with open(notes_file, "w", encoding="utf-8") as f:
-        json.dump(current_notes, f, ensure_ascii=False, indent=4)
-
-    # 4. Senin hazırladığın bildirim iskeletine uygun formatı dön
-    return {
-        "bulunanlar": bulunanlar_listesi
-    }
-
-
 
 # --- GOOGLE CALENDAR ENTEGRASYONU ---
 SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -856,6 +796,171 @@ async def execute_task(req: ExecuteTaskRequest, x_user_email: str = Header(defau
     
     return {"status": "error", "message": "Geçersiz action."}
 
+
+# =============================================================================
+# AGENT ENDPOINTS (Merge from agent_api.py — port 8001 is no longer needed)
+# =============================================================================
+
+class TaskRequest(BaseModel):
+    metin: str
+
+class ProactiveRequest(BaseModel):
+    sohbet_gecmisi: List[str]
+
+class AuditorRequest(BaseModel):
+    doc1_text: str
+    doc2_text: str
+
+class ValidatorRequest(BaseModel):
+    extracted_text: str
+
+
+@app.post("/agent/task-extract")
+async def extract_task_endpoint(req: TaskRequest):
+    logger.info(f"/agent/task-extract istegi alindi ({len(req.metin)} karakter).")
+    try:
+        baslangic = {
+            "metin": req.metin,
+            "cikarim_sonucu": None,
+            "islem_durumu": "BASLADI",
+            "error": None
+        }
+        tamamlanmis = graph_invoke_with_timeout(baslangic, timeout=30)
+
+        if tamamlanmis.get("error"):
+            logger.warning(f"Agent hata ile tamamlandi: {tamamlanmis['error']}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": True, "message": tamamlanmis["error"], "code": 500}
+            )
+
+        sonuc_model = tamamlanmis.get("cikarim_sonucu")
+        sonuc_dict = sonuc_model.dict() if sonuc_model else None
+        logger.info("Gorev cikarimi basariyla tamamlandi.")
+        return {
+            "success": True,
+            "islem_durumu": tamamlanmis.get("islem_durumu"),
+            "data": sonuc_dict
+        }
+    except TimeoutError as e:
+        logger.error(f"Timeout: {e}")
+        raise HTTPException(status_code=504, detail=str(e))
+    except RateLimitError:
+        logger.error("OpenAI rate limit asildi.")
+        raise HTTPException(status_code=429, detail="OpenAI rate limit asildi. Lutfen bekleyin.")
+    except AuthenticationError:
+        logger.error("OpenAI kimlik dogrulama hatasi.")
+        raise HTTPException(status_code=401, detail="OpenAI API kimlik hatasi.")
+    except APITimeoutError:
+        logger.error("OpenAI API zaman asimi.")
+        raise HTTPException(status_code=504, detail="OpenAI API zaman asimi.")
+    except Exception as e:
+        logger.error(f"Gorev cikarimi hatasi: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Gorev cikarimi sirasinda hata: {str(e)}")
+
+
+@app.post("/agent/proactive-search")
+async def proactive_search_endpoint(req: ProactiveRequest):
+    logger.info(f"/agent/proactive-search istegi alindi ({len(req.sohbet_gecmisi)} mesaj).")
+    try:
+        baslangic = {
+            "sohbet_gecmisi": req.sohbet_gecmisi,
+            "ilgi_alanlari": [],
+            "arama_sonuclari": {},
+            "error": None
+        }
+        sonuc = proactive_graph.invoke(baslangic)
+        if sonuc.get("error"):
+            logger.warning(f"Proaktif arama hata ile tamamlandi: {sonuc['error']}")
+        logger.info("Proaktif arama tamamlandi.")
+        return {
+            "success": True,
+            "ilgi_alanlari": sonuc.get("ilgi_alanlari", []),
+            "arama_sonuclari": sonuc.get("arama_sonuclari", {}),
+            "error": sonuc.get("error")
+        }
+    except RateLimitError:
+        raise HTTPException(status_code=429, detail="OpenAI rate limit asildi.")
+    except AuthenticationError:
+        raise HTTPException(status_code=401, detail="OpenAI API kimlik hatasi.")
+    except APITimeoutError:
+        raise HTTPException(status_code=504, detail="OpenAI API zaman asimi.")
+    except Exception as e:
+        logger.error(f"Proaktif arama hatasi: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Proaktif arama sirasinda hata: {str(e)}")
+
+
+@app.post("/agent/audit-documents")
+async def audit_documents_endpoint(req: AuditorRequest):
+    logger.info("/agent/audit-documents istegi alindi.")
+    try:
+        initial_state = {
+            "doc1_text": req.doc1_text,
+            "doc2_text": req.doc2_text,
+            "comparison_results": {},
+            "executive_summary": "",
+            "error": None
+        }
+        final_state = await auditor_app.ainvoke(initial_state)
+
+        if final_state.get("error"):
+            logger.warning(f"Denetim hata ile tamamlandi: {final_state['error']}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": True, "message": final_state["error"], "code": 500}
+            )
+
+        logger.info("Dokuman denetimi basariyla tamamlandi.")
+        return {
+            "success": True,
+            "comparison_results": final_state.get("comparison_results", {}),
+            "executive_summary": final_state.get("executive_summary", "")
+        }
+    except RateLimitError:
+        raise HTTPException(status_code=429, detail="OpenAI rate limit asildi.")
+    except AuthenticationError:
+        raise HTTPException(status_code=401, detail="OpenAI API kimlik hatasi.")
+    except APITimeoutError:
+        raise HTTPException(status_code=504, detail="OpenAI API zaman asimi.")
+    except Exception as e:
+        logger.error(f"Dokuman denetimi hatasi: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Dokuman denetimi sirasinda hata: {str(e)}")
+
+
+@app.post("/agent/validate-document")
+async def validate_document_endpoint(req: ValidatorRequest):
+    logger.info("/agent/validate-document istegi alindi.")
+    try:
+        initial_state = {
+            "extracted_text": req.extracted_text,
+            "validation_results": {},
+            "error": None
+        }
+        final_state = await validator_app.ainvoke(initial_state)
+
+        if final_state.get("error"):
+            logger.warning(f"Dogrulama hata ile tamamlandi: {final_state['error']}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": True, "message": final_state["error"], "code": 500}
+            )
+
+        logger.info("Belge dogrulamasi basariyla tamamlandi.")
+        return {
+            "success": True,
+            "validation_results": final_state.get("validation_results", {})
+        }
+    except RateLimitError:
+        raise HTTPException(status_code=429, detail="OpenAI rate limit asildi.")
+    except AuthenticationError:
+        raise HTTPException(status_code=401, detail="OpenAI API kimlik hatasi.")
+    except APITimeoutError:
+        raise HTTPException(status_code=504, detail="OpenAI API zaman asimi.")
+    except Exception as e:
+        logger.error(f"Belge dogrulama hatasi: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Belge dogrulamasi sirasinda hata: {str(e)}")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=300)
+    uvicorn.run("api:app", host="127.0.0.1", port=8000, reload=True)
