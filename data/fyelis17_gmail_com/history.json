@@ -1,0 +1,68 @@
+[
+    {
+        "id": "1778578884522",
+        "title": "Bu iki belge arasındaki farkları ve risk...",
+        "messages": [
+            {
+                "id": "1778578884520",
+                "type": "user",
+                "content": "Bu iki belge arasındaki farkları ve riskleri bul",
+                "fileContext": "📷 belge A.png"
+            },
+            {
+                "id": "1778578884521",
+                "type": "bot",
+                "content": "Kullanıcının sorusuna yanıt verebilmek için elimizde yalnızca bir belge var: \"Belge A (Orijinal Taslak)\". Başka bir belgeye atıfta bulunulmadığı için, iki belge arasındaki farkları ve riskleri belirlemek mümkün değil. Ancak, elimizdeki belge üzerinden bazı riskleri değerlendirebiliriz:\n\n1. **Eksik Bilgi**: TC Kimlik No kısmı boş bırakılmış. Bu, kiracı veya kiraya verenin kimliğinin doğrulanamaması gibi sorunlara yol açabilir.\n\n2. **Kira Bedeli**: Aylık kira bedeli \"15.0OO TL\" olarak belirtilmiş. Bu, \"15.000 TL\" olarak düzeltilmelidir. Yanlış yazım, yanlış anlaşılmalara neden olabilir.\n\n3. **Artış Oranı**: Kira artış oranının TÜFE üzerinden hesaplanacağı belirtilmiş. Ancak, TÜFE oranının ne zaman ve nasıl uygulanacağı netleştirilmemişse, taraflar arasında anlaşmazlık çıkabilir.\n\n4. **Depozito**: Depozito bedelinin iki aylık kira olduğu belirtilmiş. Ancak, depozitonun hangi koşullarda iade edileceği daha detaylı açıklanmalıdır.\n\n5. **Fesih Bildirimi**: Fesih durumunda tarafların iki ay önceden yazılı bildirim yapması gerektiği belirtilmiş. Ancak, fesih koşulları ve hangi durumların fesih sebebi sayılacağı daha detaylı açıklanmalıdır.\n\nBu belgedeki eksiklikler ve belirsizlikler, ileride taraflar arasında anlaşmazlıklara yol açabilir. Sözleşmenin daha detaylı ve net bir şekilde hazırlanması, olası riskleri azaltacaktır.",
+                "loading": false,
+                "buttonsType": "foto",
+                "missingFields": []
+            },
+            {
+                "id": "1778578884522",
+                "type": "user",
+                "content": "Bu iki belge arasındaki farkları ve riskleri bul",
+                "fileContext": "📷 belge B.png"
+            },
+            {
+                "id": "1778578884523",
+                "type": "bot",
+                "content": "Belge B'de belirtilen \"Değiştirilmiş Riskli Taslak\" ifadesi, sözleşmede yapılan değişikliklerin ve eklenen risklerin altını çizmektedir. İşte iki belge arasındaki farklar ve riskler:\n\n1. **Kira Bedeli ve Artış Oranı:**\n   - **Fark:** Belge B'de kira bedeli aylık 15.000 TL olarak belirtilmiş ve artış oranı her yıl sabit %60 olarak uygulanacağı belirtilmiş. Bu oran oldukça yüksek ve kiracı için finansal bir risk oluşturabilir.\n\n2. **Depozito Maddesi:**\n   - **Fark:** Belge B'de depozito maddesi tamamen silinmiş. Bu durum kiraya veren için bir risk olabilir, çünkü kiracıdan kaynaklanabilecek zararlar için bir güvence bulunmamaktadır.\n\n3. **Sözleşmenin Feshi:**\n   - **Risk:** Madde 3'te kiraya verenin herhangi bir sebep göstermeksizin sözleşmeyi tek taraflı feshedebileceği belirtilmiş. Bu, kiracı için önemli bir risk teşkil eder çünkü kiracının konut güvenliği tehlikeye girebilir.\n\n4. **Ekstra Bakım Giderleri:**\n   - **Fark ve Risk:** Madde 4'te kiracının apartman yönetiminin belirleyeceği tüm ekstra bakım giderlerinden doğrudan sorumlu olduğu belirtilmiş. Bu, kiracı için beklenmedik mali yükler doğurabilir ve bu durum finansal bir risk oluşturur.\n\nBu farklar ve riskler, kiracı açısından önemli finansal ve konut güvenliği sorunları yaratabilir. Kiracının bu konuları dikkatlice değerlendirmesi ve gerekirse hukuki danışmanlık alması önerilir.",
+                "loading": false,
+                "buttonsType": "foto",
+                "missingFields": [
+                    "TC Kimlik No",
+                    "IBAN",
+                    "E-posta",
+                    "Telefon"
+                ]
+            }
+        ],
+        "timestamp": "2026-05-12T09:41:24.557Z",
+        "missingFields": []
+    },
+    {
+        "id": "1778577528272",
+        "title": "bu belgede eksik bilgi var mı?",
+        "messages": [
+            {
+                "id": "1778577528273",
+                "type": "user",
+                "content": "bu belgede eksik bilgi var mı?",
+                "fileContext": "📷 Ekran görüntüsü 2026-05-11 155931.png"
+            },
+            {
+                "id": "1778577528274",
+                "type": "bot",
+                "content": "OCR ile okunmuş metinde eksik bilgi olarak \"TC Kimlik No\" kısmı boş bırakılmış. Ayrıca e-posta adresinde \".com\" kısmı eksik yazılmış, doğru hali \"ornek@eposta.com\" olmalıdır. Bu iki bilgi eksik veya hatalı olarak değerlendirilebilir.",
+                "loading": false,
+                "buttonsType": "foto",
+                "missingFields": [
+                    "IBAN",
+                    "Telefon"
+                ]
+            }
+        ],
+        "timestamp": "2026-05-12T09:18:48.293Z",
+        "missingFields": []
+    }
+]

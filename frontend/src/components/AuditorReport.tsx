@@ -18,6 +18,7 @@ export interface AuditorResponse {
 
 interface AuditorReportProps {
   data: AuditorResponse;
+  onItemClick?: (detail: string) => void;
 }
 
 const severityConfig = {
@@ -92,20 +93,23 @@ function RiskRing({ score }: { score: number }) {
   );
 }
 
-function AccordionCard({ item }: { item: AuditorChange }) {
+function AccordionCard({ item, onClick }: { item: AuditorChange; onClick?: () => void }) {
   const [open, setOpen] = useState(false);
   const sev = item.severity ?? 'medium';
-  const cfg = severityConfig[sev];
-  const typeCfg = typeConfig[item.type];
+  const cfg = severityConfig[sev as keyof typeof severityConfig] || severityConfig.medium;
+  const typeCfg = typeConfig[item.type as keyof typeof typeConfig] || typeConfig.risk;
   const Icon = cfg.icon;
 
   return (
     <div className={`border ${cfg.border} ${cfg.bg} rounded-xl overflow-hidden transition-all duration-200`}>
       <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-3 p-4 text-left"
+        onClick={() => {
+          setOpen(!open);
+          if (!open && onClick) onClick();
+        }}
+        className="w-full flex items-center gap-3 p-4 text-left group"
       >
-        <Icon className={`w-4 h-4 flex-shrink-0 ${cfg.color}`} />
+        <Icon className={`w-4 h-4 flex-shrink-0 ${cfg.color} group-hover:scale-110 transition-transform`} />
         <span className="flex-1 text-sm font-semibold text-slate-800 dark:text-slate-200">{item.title}</span>
         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${typeCfg.badge}`}>{typeCfg.label}</span>
         {open ? <ChevronUp className="w-4 h-4 text-slate-400 flex-shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 flex-shrink-0" />}
@@ -119,7 +123,7 @@ function AccordionCard({ item }: { item: AuditorChange }) {
   );
 }
 
-export const AuditorReport: React.FC<AuditorReportProps> = ({ data }) => {
+export const AuditorReport: React.FC<AuditorReportProps> = ({ data, onItemClick }) => {
   const [showMissing, setShowMissing] = useState(false);
 
   return (
@@ -158,7 +162,11 @@ export const AuditorReport: React.FC<AuditorReportProps> = ({ data }) => {
               Tespit Edilen Değişiklikler & Riskler ({data.changes.length})
             </h3>
             {data.changes.map((item, i) => (
-              <AccordionCard key={i} item={item} />
+              <AccordionCard 
+                key={i} 
+                item={item} 
+                onClick={() => onItemClick?.(`**${item.title}**: ${item.description}`)}
+              />
             ))}
           </div>
         )}

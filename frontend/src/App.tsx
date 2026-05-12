@@ -4,6 +4,7 @@ import axios from 'axios';
 import { ActionModal } from './components/ActionModal';
 import { ValidatorModal, ValidatorResponse } from './components/ValidatorModal';
 import { AuditorReport, AuditorResponse } from './components/AuditorReport';
+import { MissingInfoPanel } from './components/MissingInfoPanel';
 import { useGoogleLogin, googleLogout } from '@react-oauth/google';
 import { jwtDecode } from "jwt-decode";
 
@@ -84,6 +85,10 @@ interface ChatSession {
   messages: ChatMessage[];
   timestamp: string;
   pinned?: boolean;
+  validatorValues?: Record<string, string>;
+  missingFields?: string[];
+  auditorReportData?: AuditorResponse;
+  sessionFiles?: string[]; // [YENİ] Oturumdaki tüm dosyalar
 }
 
 interface ChatMessage {
@@ -95,6 +100,7 @@ interface ChatMessage {
   error?: string;
   buttonsType?: 'soru' | 'foto' | 'pdf';
   fileContext?: string;
+  missingFields?: string[]; // [YENİ] Mesajın içindeki metadata
 }
 
 interface Note {
@@ -152,9 +158,10 @@ function App() {
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [history, setHistory] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [currentFileName, setCurrentFileName] = useState<string | null>(null); // Aktif session'daki PDF
   const historyRef = useRef<ChatSession[]>([]);
 
   useEffect(() => {
@@ -196,6 +203,9 @@ function App() {
   const [validatorOpen, setValidatorOpen] = useState(false);
   const [auditorReportData, setAuditorReportData] = useState<AuditorResponse | null>(null);
   const [rightTab, setRightTab] = useState<'calendar' | 'validator' | 'auditor'>('calendar');
+  const [isRightShaking, setIsRightShaking] = useState(false); // Titreme efekti
+  const [missingFields, setMissingFields] = useState<string[]>([]);
+  const [sessionFiles, setSessionFiles] = useState<string[]>([]); // [YENİ]
 
   const currentEmail = userProfile?.email || 'guest';
   const axiosInstance = axios.create({
@@ -350,16 +360,92 @@ function App() {
     }
   }, [chatMessages]);
 
+  // [YENİ] Reactive State Sync: Mesaj listesindeki en son bot metadata'sını yakala
+  useEffect(() => {
+    if (chatMessages.length === 0) {
+      setMissingFields([]);
+      return;
+    }
+
+    const lastMsg = chatMessages[chatMessages.length - 1];
+    
+    // [YENİ] Eğer metin içinde risk analizi geçiyorsa ve 2 dosya varsa tetikle
+    const auditTriggers = ['farkları bul', 'risk analizi yap', 'karşılaştır', 'denetle', 'analiz et', 'farklar', 'riskler'];
+    const isAuditTurn = lastMsg.content && auditTriggers.some(t => lastMsg.content.toLowerCase().includes(t));
+    
+    if (isAuditTurn && sessionFiles.length >= 2) {
+       if (!auditorReportData) {
+          handleAuditDocuments(sessionFiles);
+       }
+       // Auditor sekmesine geç ve paneli aç (Requirement 3)
+       setRightTab('auditor');
+       setIsRightExpanded(true);
+       
+       // Eğer denetim yapılıyorsa "Eksik Bilgi" modülünü bu turda çalıştırma (Requirement 4)
+       setMissingFields([]);
+       return;
+    }
+
+    // Eğer kullanıcı mesaj attıysa veya bot hala yükleniyorsa, yan paneli temizle (yeni analiz başlıyor)
+    if (lastMsg.type === 'user' || lastMsg.loading) {
+      setMissingFields([]);
+      return;
+    }
+
+    if (lastMsg.type === 'bot' && !lastMsg.loading) {
+      // 1. Metadata'dan al
+      let detectedFields: string[] = lastMsg.missingFields ? [...lastMsg.missingFields] : [];
+      
+      // 2. Metin içinden parsing (Requirement 4)
+      const content = lastMsg.content || '';
+      
+      // JSON Formatı (MISSING_INFO: ["TC No"])
+      const jsonMatch = content.match(/MISSING_INFO:\s*(\[.*?\])/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[1]);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(f => { if (!detectedFields.includes(f)) detectedFields.push(f); });
+          }
+        } catch(e) {}
+      }
+
+      // Metinsel kalıplar (Requirement 4)
+      const commonFields = ['TC Kimlik No', 'IBAN', 'Telefon', 'Ad Soyad', 'Tarih', 'İmza', 'E-posta'];
+      commonFields.forEach(field => {
+        const lowerContent = content.toLowerCase();
+        const lowerField = field.toLowerCase();
+        if (lowerContent.includes(lowerField)) {
+          if (lowerContent.includes(lowerField + ' eksik') || 
+              lowerContent.includes(lowerField + ' alanı boş') ||
+              lowerContent.includes(lowerField + ' bulunamadı')) {
+            if (!detectedFields.includes(field)) detectedFields.push(field);
+          }
+        }
+      });
+
+      // 3. State Güncelle
+      setMissingFields(detectedFields);
+      
+      if (detectedFields.length > 0) {
+        setRightTab('validator');
+        setIsRightExpanded(true);
+        setIsRightShaking(true);
+        setTimeout(() => setIsRightShaking(false), 1000);
+      }
+    }
+  }, [chatMessages]);
+
   useEffect(() => {
     if (chatMessages.length > 0 && currentSessionId) {
       const prevHistory = historyRef.current;
       const sessionIndex = prevHistory.findIndex(h => h.id === currentSessionId);
       let updatedHistory = [...prevHistory];
       
-      if (sessionIndex >= 0) {
-        updatedHistory[sessionIndex] = {
-          ...updatedHistory[sessionIndex],
-          messages: chatMessages
+          messages: chatMessages,
+          missingFields: missingFields,
+          auditorReportData: auditorReportData || undefined,
+          sessionFiles: sessionFiles // [YENİ]
         };
       } else {
         const firstUserMsg = chatMessages.find(m => m.type === 'user');
@@ -371,6 +457,8 @@ function App() {
           id: currentSessionId,
           title: title.substring(0, 40) + (title.length > 40 ? '...' : ''),
           messages: chatMessages,
+          auditorReportData: auditorReportData || undefined,
+          sessionFiles: sessionFiles, // [YENİ]
           timestamp: new Date().toISOString()
         };
         updatedHistory = [newSession, ...updatedHistory];
@@ -379,7 +467,7 @@ function App() {
       setHistory(updatedHistory);
       axiosInstance.post(`/api/history`, updatedHistory).catch(() => {});
     }
-  }, [chatMessages, currentSessionId]);
+  }, [chatMessages, currentSessionId, auditorReportData, sessionFiles]); // [GÜNCEL]
 
   const fetchHistory = async () => {
     try {
@@ -478,6 +566,20 @@ function App() {
     setCurrentSessionId(session.id);
     setChatMessages(session.messages || []);
     setIsMobileMenuOpen(false);
+    
+    // Validator & Auditor verilerini yükle
+    setMissingFields(session.missingFields || []);
+    setAuditorReportData(session.auditorReportData || null);
+    setSessionFiles(session.sessionFiles || []);
+
+    // Sohbetteki dosya adını bul (fileContext'ten çek)
+    const fileMsg = (session.messages || []).find(m => m.fileContext && (m.fileContext.includes('.pdf') || m.fileContext.includes('📄')));
+    if (fileMsg?.fileContext) {
+      const name = fileMsg.fileContext.replace('📄', '').replace('PDF:', '').trim();
+      setCurrentFileName(name);
+    } else {
+      setCurrentFileName(null);
+    }
   };
 
   const deleteHistoryItem = async (id: string, e: React.MouseEvent) => {
@@ -528,19 +630,58 @@ function App() {
     setHasStartedChat(false);
     setChatMessages([]);
     setCurrentSessionId(null);
+    setCurrentFileName(null);
     setInputValue('');
     setAsistanRaporu(null);
     setIsMobileMenuOpen(false);
+    setMissingFields([]);
+    setAuditorReportData(null);
+    setSessionFiles([]);
+  };
+
+  const handleAuditDocuments = async (fileList: string[]) => {
+    if (fileList.length < 2) return;
+    
+    setRightTab('auditor');
+    setIsRightExpanded(true);
+    setIsRightShaking(true);
+    setTimeout(() => setIsRightShaking(false), 1000);
+
+    try {
+      const resp = await axiosInstance.post(`/agent/audit-documents`, {
+        filenames: fileList
+      });
+      if (resp.data.success) {
+        setAuditorReportData(resp.data.comparison_results);
+      }
+    } catch (err) {
+      console.error("Audit hatası:", err);
+    }
+  };
+
+  const handleAuditorItemClick = (detail: string) => {
+    const botId = Date.now().toString();
+    setChatMessages(prev => [...prev, {
+      id: botId,
+      type: 'bot',
+      content: `Seçtiğiniz madde hakkında detaylı analiz:\n\n${detail}\n\nBu değişikliğin sözleşme bütünlüğü ve yasal riskleri üzerindeki etkilerini inceleyebilirsiniz.`,
+    }]);
   };
 
   const handleSoruSor = async () => {
-    if (selectedFile) {
-      if (selectedFile.name.toLowerCase().endsWith('.pdf')) {
-        handlePdfYukle(selectedFile);
-      } else {
-        handleFotoAnaliz(selectedFile);
+    if (selectedFiles.length > 0) {
+      const pdfs = selectedFiles.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+      const images = selectedFiles.filter(f => !f.name.toLowerCase().endsWith('.pdf'));
+
+      if (pdfs.length > 0) {
+        handlePdfYukle(pdfs);
       }
-      setSelectedFile(null);
+      if (images.length > 0) {
+        for (const img of images) {
+          handleFotoAnaliz(img);
+        }
+      }
+      setSelectedFiles([]);
       return;
     }
 
@@ -559,27 +700,39 @@ function App() {
 
     const userId = Date.now().toString();
     setChatMessages(prev => [...prev, { id: userId, type: 'user', content: text }]);
+    setMissingFields([]); // [YENİ] Yeni sorguda temizle
 
     const botId = (Date.now() + 1).toString();
     setChatMessages(prev => [...prev, { id: botId, type: 'bot', content: '', loading: true }]);
 
-    // Fire & forget
-    axios.post('http://10.114.10.152:8001/agent/proactive-search', { sohbet_gecmisi: [text] })
+    // Fire & forget (Birleşik API'ye yönlendirildi)
+    axiosInstance.post('/agent/proactive-search', { sohbet_gecmisi: [text] })
       .then(resp => {
         const sonuc = resp.data.arama_sonuclari || resp.data.rapor;
         if (sonuc) setAsistanRaporu(sonuc);
       }).catch(() => {});
 
     try {
-      const response = await axiosInstance.post<QueryResponse>(`/sor`, {
+      const response = await axiosInstance.post<QueryResponse & { missing_info?: string[] }>(`/sor`, {
         soru: text,
-        top_k: 15
+        top_k: 15,
+        dosya_adlari: sessionFiles // [GÜNCEL] Oturumdaki tüm dosyaları sorgula
       });
+      
       setChatMessages(prev => prev.map(msg =>
         msg.id === botId
-          ? { ...msg, loading: false, content: response.data.cevap, kaynaklar: response.data.kaynaklar, buttonsType: 'soru' }
+          ? { 
+              ...msg, 
+              loading: false, 
+              content: response.data.cevap, 
+              kaynaklar: response.data.kaynaklar, 
+              buttonsType: 'soru',
+              missingFields: response.data.missing_info // [YENİ] Metadata'yı mesaja ekle
+            }
           : msg
       ));
+
+      // [SİLİNDİ] setMissingFields artık useEffect ile reactive olarak güncelleniyor.
     } catch (error: any) {
       setChatMessages(prev => prev.map(msg =>
         msg.id === botId
@@ -602,6 +755,7 @@ function App() {
 
     const userId = Date.now().toString();
     setChatMessages(prev => [...prev, { id: userId, type: 'user', content: userText, fileContext: `📷 ${file.name}` }]);
+    setMissingFields([]); // [YENİ]
 
     const botId = (Date.now() + 1).toString();
     setChatMessages(prev => [...prev, { id: botId, type: 'bot', content: '', loading: true }]);
@@ -618,7 +772,13 @@ function App() {
       );
       setChatMessages(prev => prev.map(msg =>
         msg.id === botId
-          ? { ...msg, loading: false, content: response.data.cevap, buttonsType: 'foto' }
+          ? { 
+              ...msg, 
+              loading: false, 
+              content: response.data.cevap, 
+              buttonsType: 'foto',
+              missingFields: response.data.missing_info // [YENİ]
+            }
           : msg
       ));
     } catch (error: any) {
@@ -630,7 +790,7 @@ function App() {
     }
   };
 
-  const handlePdfYukle = async (file: File) => {
+  const handlePdfYukle = async (files: File[]) => {
     let sessionId = currentSessionId;
     if (!sessionId) {
       sessionId = Date.now().toString();
@@ -641,25 +801,20 @@ function App() {
     setInputValue('');
     
     const userId = Date.now().toString();
-    setChatMessages(prev => [...prev, { id: userId, type: 'user', content: userText || 'Lütfen bu belgeyi sisteme yükle ve analiz et.', fileContext: `📄 ${file.name}` }]);
+    const fileListStr = files.map(f => `📄 ${f.name}`).join(', ');
+    setChatMessages(prev => [...prev, { id: userId, type: 'user', content: userText || 'Lütfen bu belgeleri sisteme yükle ve analiz et.', fileContext: fileListStr }]);
+    setMissingFields([]); // [YENİ]
 
     const botId = (Date.now() + 1).toString();
     setChatMessages(prev => [...prev, { id: botId, type: 'bot', content: '', loading: true }]);
 
-    if (!file.name.endsWith('.pdf')) {
-      setChatMessages(prev => prev.map(msg =>
-        msg.id === botId
-          ? { ...msg, loading: false, error: 'Sadece PDF dosyaları yüklenebilir!' }
-          : msg
-      ));
-      return;
-    }
+    // PDF kontrolü zaten handleSoruSor'da yapıldı
 
     try {
       const formData = new FormData();
-      formData.append('file', file);
+      files.forEach(f => formData.append('files', f));
 
-      const response = await axiosInstance.post<UploadResponse>(
+      const uploadResp = await axiosInstance.post<any>(
         `/yukle`,
         formData,
         {
@@ -667,14 +822,70 @@ function App() {
           timeout: 300000
         }
       );
-      setChatMessages(prev => prev.map(msg =>
-        msg.id === botId
-          ? { ...msg, loading: false, content: `✅ ${response.data.mesaj}`, buttonsType: 'pdf' }
-          : msg
-      ));
+
+      // [YENİ] İlk yüklemede gelen eksik bilgileri temizleyip set et
+      setMissingFields([]); 
+
+      // Dosya adlarını session'a kaydet
+      const newFileNames = files.map(f => f.name);
+      setSessionFiles(prev => {
+        const combined = [...prev];
+        newFileNames.forEach(name => {
+          if (!combined.includes(name)) combined.push(name);
+        });
+        return combined;
+      });
+      
+      if (files.length > 0) setCurrentFileName(files[files.length - 1].name);
+
+        if (userText) {
+        // Kullanıcı bir soru yazdıysa
+        setChatMessages(prev => prev.filter(msg => msg.id !== botId));
+        const answerBotId = (Date.now() + 2).toString();
+        setChatMessages(prev => [...prev, { id: answerBotId, type: 'bot', content: '', loading: true }]);
+        try {
+          const qResp = await axiosInstance.post<QueryResponse & { missing_info?: string[] }>(`/sor`, {
+            soru: userText,
+            top_k: 15,
+            dosya_adlari: sessionFiles // [GÜNCEL] Tüm dosyaları gönder
+          });
+          setChatMessages(prev => prev.map(msg =>
+            msg.id === answerBotId
+              ? { 
+                  ...msg, 
+                  loading: false, 
+                  content: qResp.data.cevap, 
+                  kaynaklar: qResp.data.kaynaklar, 
+                  buttonsType: 'soru',
+                  missingFields: qResp.data.missing_info // [YENİ]
+                }
+              : msg
+          ));
+        } catch (qErr: any) {
+          setChatMessages(prev => prev.map(msg =>
+            msg.id === answerBotId
+              ? { ...msg, loading: false, error: qErr.response?.data?.detail || 'Soru yanıtlanamadı.' }
+              : msg
+          ));
+        }
+      } else {
+        // Soru yoksa kısa bir onay mesajı göster
+        const fileNames = files.map(f => f.name).join(', ');
+        setChatMessages(prev => prev.map(msg =>
+          msg.id === botId
+            ? { 
+                ...msg, 
+                loading: false, 
+                content: `✅ ${files.length} belge hazır: ${fileNames}. Şimdi bu belgeler hakkında sorularınızı sorabilir veya karşılaştırma yapabilirsiniz.`, 
+                buttonsType: 'pdf',
+                missingFields: uploadResp.data.missing_info // [YENİ]
+              }
+            : msg
+        ));
+      }
     } catch (error: any) {
-      const errMsg = error.code === 'ECONNABORTED' 
-        ? 'İşlem sunucuda devam ediyor olabilir ancak yanıt süresi doldu.' 
+      const errMsg = error.code === 'ECONNABORTED'
+        ? 'İşlem sunucuda devam ediyor olabilir ancak yanıt süresi doldu.'
         : (error.response?.data?.detail || 'Sunucuyla bağlantı kurulurken hata oluştu');
       setChatMessages(prev => prev.map(msg =>
         msg.id === botId
@@ -1088,27 +1299,34 @@ function App() {
         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white dark:from-[#0f1115] dark:via-[#0f1115] to-transparent pt-10 pb-6 px-4">
           <div className="max-w-4xl mx-auto relative flex flex-col gap-2">
             
-            {/* Selected File Thumbnail Preview */}
-            {selectedFile && (
-              <div className="flex items-center gap-3 bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-700 w-fit p-2 rounded-xl shadow-sm animate-in fade-in slide-in-from-bottom-2">
-                {selectedFile.type.startsWith('image/') ? (
-                  <img src={URL.createObjectURL(selectedFile)} alt="preview" className="w-12 h-12 object-cover rounded-md border border-slate-200 dark:border-slate-700" />
-                ) : (
-                  <div className="w-12 h-12 flex items-center justify-center bg-slate-100 dark:bg-[#252a36] rounded-md border border-slate-200 dark:border-slate-700">
-                    <FileText className="w-6 h-6 text-emerald-500" />
+            {selectedFiles.length > 0 && (
+              <div className="flex flex-wrap gap-3 animate-in fade-in slide-in-from-bottom-2 mb-2">
+                {selectedFiles.map((file, idx) => (
+                  <div key={idx} className="flex items-center gap-3 bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-700 w-fit p-2 rounded-xl shadow-sm">
+                    {file.type.startsWith('image/') ? (
+                      <img src={URL.createObjectURL(file)} alt="preview" className="w-10 h-10 object-cover rounded-md border border-slate-200 dark:border-slate-700" />
+                    ) : (
+                      <div className="w-10 h-10 flex items-center justify-center bg-slate-100 dark:bg-[#252a36] rounded-md border border-slate-200 dark:border-slate-700">
+                        <FileText className="w-5 h-5 text-emerald-500" />
+                      </div>
+                    )}
+                    <div className="flex flex-col max-w-[150px]">
+                      <span className="text-[12px] font-semibold text-slate-800 dark:text-slate-200 truncate">{file.name}</span>
+                      <span className="text-[10px] text-slate-500">{(file.size / 1024).toFixed(1)} KB</span>
+                    </div>
+                    <button 
+                      onClick={() => setSelectedFiles(prev => prev.filter((_, i) => i !== idx))}
+                      className="ml-1 p-1 text-slate-400 hover:text-red-500 bg-slate-50 dark:bg-[#252a36] rounded-full transition-colors"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+                {selectedFiles.length > 1 && (
+                  <div className="flex items-center px-3 py-1 bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20 rounded-full">
+                    <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400">{selectedFiles.length} dosya seçildi</span>
                   </div>
                 )}
-                <div className="flex flex-col max-w-[200px]">
-                  <span className="text-sm font-semibold text-slate-800 dark:text-slate-200 truncate">{selectedFile.name}</span>
-                  <span className="text-[10px] text-slate-500">{(selectedFile.size / 1024).toFixed(1)} KB</span>
-                </div>
-                <button 
-                  onClick={() => setSelectedFile(null)}
-                  className="ml-2 p-1.5 text-slate-400 hover:text-red-500 bg-slate-50 dark:bg-[#252a36] rounded-full transition-colors border border-slate-200 dark:border-slate-700"
-                  title="Dosyayı Kaldır"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
               </div>
             )}
 
@@ -1134,8 +1352,8 @@ function App() {
               />
               <button 
                 onClick={handleSoruSor}
-                disabled={!inputValue.trim() && !selectedFile}
-                className={`p-3 rounded-xl transition-all m-1 flex items-center justify-center ${inputValue.trim() || selectedFile ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg' : 'bg-slate-200 dark:bg-[#252a36] text-slate-400 cursor-not-allowed'}`}
+                disabled={!inputValue.trim() && selectedFiles.length === 0}
+                className={`p-3 rounded-xl transition-all m-1 flex items-center justify-center ${inputValue.trim() || selectedFiles.length > 0 ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg' : 'bg-slate-200 dark:bg-[#252a36] text-slate-400 cursor-not-allowed'}`}
               >
                 <Send className="w-4 h-4" />
               </button>
@@ -1144,12 +1362,12 @@ function App() {
         </div>
 
         {/* File Inputs */}
-        <input ref={fileInputRef} type="file" accept="image/*" onChange={(e) => { if(e.target.files?.[0]) { setSelectedFile(e.target.files[0]); if(inputRef.current) inputRef.current.focus(); } }} className="hidden" />
-        <input ref={pdfInputRef} type="file" accept=".pdf" onChange={(e) => { if(e.target.files?.[0]) { setSelectedFile(e.target.files[0]); if(inputRef.current) inputRef.current.focus(); } }} className="hidden" />
+        <input ref={fileInputRef} type="file" multiple accept="image/*" onChange={(e) => { if(e.target.files) { setSelectedFiles(prev => [...prev, ...Array.from(e.target.files!)]); if(inputRef.current) inputRef.current.focus(); } }} className="hidden" />
+        <input ref={pdfInputRef} type="file" multiple accept=".pdf" onChange={(e) => { if(e.target.files) { setSelectedFiles(prev => [...prev, ...Array.from(e.target.files!)]); if(inputRef.current) inputRef.current.focus(); } }} className="hidden" />
       </div>
 
       {/* Right Sidebar — Tabbed */}
-      <div className={`hidden xl:flex flex-col bg-slate-50/80 dark:bg-[#12141a]/80 backdrop-blur-xl border-l border-slate-200 dark:border-slate-800/50 z-20 transition-all duration-300 ease-in-out ${isRightExpanded ? 'w-[350px]' : 'w-20'}`}>
+      <div className={`hidden xl:flex flex-col bg-slate-50/80 dark:bg-[#12141a]/80 backdrop-blur-xl border-l border-slate-200 dark:border-slate-800/50 z-20 transition-all duration-300 ease-in-out ${isRightExpanded ? 'w-[350px]' : 'w-20'} ${isRightShaking ? 'animate-shake ring-2 ring-purple-500/50' : ''}`}>
 
         {/* Header */}
         {isRightExpanded ? (
@@ -1302,45 +1520,12 @@ function App() {
             </>
           )}
 
-          {/* ── TAB: VALIDATOR ── */}
+          {/* ── TAB: VALIDATOR (READ-ONLY) ── */}
           {rightTab === 'validator' && isRightExpanded && (
-            <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-right-4 duration-300">
-              <div className="flex items-center gap-2 mb-1">
-                <div className="w-8 h-8 bg-purple-100 dark:bg-purple-500/20 rounded-lg flex items-center justify-center">
-                  <Search className="w-4 h-4 text-purple-500" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200">Eksik Bilgi Analizi</h2>
-                  <p className="text-[11px] text-slate-500">Belgede eksik alanları tamamla</p>
-                </div>
-              </div>
-              {!mockValidatorResponse.is_complete ? (
-                <div className="flex flex-col gap-3">
-                  {mockValidatorResponse.missing_fields.map((field) => {
-                    const labels: Record<string, string> = { tarih: 'Tarih', tc_no: 'TC Kimlik No', iban: 'IBAN', imza: 'İmza', ad_soyad: 'Ad Soyad', telefon: 'Telefon', tutar: 'Tutar (₺)' };
-                    const types: Record<string, string> = { tarih: 'date', tc_no: 'text', iban: 'text', telefon: 'tel', tutar: 'number' };
-                    return (
-                      <div key={field} className="flex flex-col gap-1.5">
-                        <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">{labels[field] ?? field}</label>
-                        <input
-                          type={types[field] ?? 'text'}
-                          placeholder={`${labels[field] ?? field} giriniz...`}
-                          className="w-full bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-700 focus:border-purple-500 focus:ring-1 focus:ring-purple-500/30 rounded-xl px-3 py-2 text-sm text-slate-800 dark:text-slate-200 outline-none transition-all"
-                        />
-                      </div>
-                    );
-                  })}
-                  <button className="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold transition-colors mt-1">
-                    Bilgileri Tamamla
-                  </button>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center gap-2 py-8">
-                  <CheckCircle className="w-10 h-10 text-emerald-500" />
-                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">Belge eksiksiz!</p>
-                </div>
-              )}
-            </div>
+            <MissingInfoPanel 
+              missingFields={missingFields} 
+              isComplete={missingFields.length === 0} 
+            />
           )}
 
           {/* ── TAB: AUDITOR ── */}
@@ -1355,7 +1540,19 @@ function App() {
                   <p className="text-[11px] text-slate-500">Risk analizi ve eksik maddeler</p>
                 </div>
               </div>
-              <AuditorReport data={mockAuditorResponse} />
+              {auditorReportData ? (
+                <AuditorReport data={auditorReportData} onItemClick={handleAuditorItemClick} />
+              ) : (
+                <div className="flex flex-col items-center justify-center py-12 px-4 text-center gap-4 bg-slate-50 dark:bg-slate-800/20 rounded-3xl border border-dashed border-slate-200 dark:border-slate-700">
+                  <div className="w-16 h-16 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center">
+                    <FileText className="w-8 h-8 text-slate-400" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200">Henüz Analiz Yok</h3>
+                    <p className="text-xs text-slate-500 max-w-[200px]">İki belge yükleyerek "karşılaştır" dediğinizde risk raporu burada görünecektir.</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
