@@ -29,6 +29,13 @@ from googleapiclient.discovery import build
 # --- AGENT ---
 from agent.web_searcher import WebSearcher
 from agent.task_extractor import TaskExtractor
+# --- LANGGRAPH AJAN MODULLERİ ---
+from agent.graph_builder import graph as task_graph, AgentState
+from agent.task_extractor import CikartmaSonucu
+from agent.proactive_graph import graph as proactive_graph, ProactiveState
+from agent.cross_document_auditor import auditor_app
+from agent.missing_info_agent import validator_app
+
 
 # --- OPENAI ENTEGRASYONU ---
 from openai import OpenAI
@@ -91,7 +98,7 @@ class AppState:
 
 state = AppState()
 
-app = FastAPI(title="OCR RAG API", version="3.9")
+app = FastAPI(title="OCR-RAG Unified API", version="4.0", description="OCR, RAG ve LangGraph Ajanlarini birlestiren FastAPI sunucusu")
 
 app.add_middleware(
     CORSMiddleware,
@@ -186,20 +193,30 @@ def goruntu_isleyerek_oku(image_bytes):
 # 2. PDF PARÇALAMA MANTIĞI
 # ==========================================
 def pdf_ocr_yap_advanced(pdf_path: str) -> Dict[int, str]:
+    logger.info(f"📄 PDF İşleniyor: {pdf_path}")
     doc = fitz.open(pdf_path)
     sayfa_metinleri = {}
     for sayfa_no in range(len(doc)):
         sayfa = doc[sayfa_no]
-        metin = sayfa.get_text()
-        if not metin or len(metin.strip()) < 100:
+        # Önce dijital metni al
+        metin = sayfa.get_text().strip()
+        logger.info(f"📄 Sayfa {sayfa_no+1}: Dijital metin uzunluğu = {len(metin)}")
+        
+        # Eğer metin çok kısaysa veya boşsa OCR dene (ama dijital metni kaybetme)
+        if len(metin) < 150:
             try:
+                logger.info(f"🔍 Sayfa {sayfa_no+1}: Metin yetersiz, OCR başlatılıyor...")
                 pix = sayfa.get_pixmap(matrix=fitz.Matrix(3, 3))
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
                 if state.ocr_reader is not None:
                     ocr_res = state.ocr_reader.readtext(np.array(img), detail=0, paragraph=True)
-                    metin = " ".join(str(o) for o in ocr_res)
+                    ocr_metin = " ".join(str(o) for o in ocr_res)
+                    logger.info(f"🔍 Sayfa {sayfa_no+1}: OCR tamamlandı. OCR metin uzunluğu = {len(ocr_metin)}")
+                    if ocr_metin.strip():
+                        metin = metin + "\n" + ocr_metin
             except Exception as e:
-                logger.error(f"OCR Hatası (Sayfa {sayfa_no+1}): {e}")
+                logger.error(f"❌ OCR Hatası (Sayfa {sayfa_no+1}): {e}")
+        
         sayfa_metinleri[sayfa_no + 1] = metin or ""
     return sayfa_metinleri
 
@@ -210,9 +227,16 @@ def chunking_logic(metin: str, sayfa_no: int, dosya_adi: str, baslangic_index: i
     
     if not maddeler:
         words = metin.split()
+        if not words and metin.strip():
+            # Eğer boşluklardan dolayı kelime yoksa ama metin varsa direkt al
+            words = [metin.strip()]
+            
+        if not words:
+            return []
+
         for i in range(0, len(words), 300):
-            t = " ".join(words[i:i+400])
-            if len(t) > 20:
+            t = " ".join(words[i:i+450]) # Biraz daha geniş pencere
+            if len(t.strip()) > 5:
                 chunks.append({
                     "metin": t,
                     "metadata": {
@@ -239,28 +263,68 @@ def chunking_logic(metin: str, sayfa_no: int, dosya_adi: str, baslangic_index: i
         except: continue
     return chunks
 
-def worker_process(pdf_path: str, dosya_adi: str):
-    logger.info(f"⚙️ İşlemci çalışıyor: {dosya_adi}")
-    sayfa_metinleri = pdf_ocr_yap_advanced(pdf_path)
-    tum_chunks = []
-    idx = 0
-    for s_no in sorted(sayfa_metinleri.keys()):
-        yeni = chunking_logic(sayfa_metinleri[s_no], s_no, dosya_adi, idx)
-        tum_chunks.extend(yeni)
-        idx += len(yeni)
     return tum_chunks
+
+def get_full_text_by_filename(filename: str) -> str:
+    """ChromaDB'den belirli bir dosyanın tüm parçalarını çekip birleştirir."""
+    if state.collection is None: return ""
+    try:
+        results = state.collection.get(where={"dosya": filename})
+        if not results or not results.get('documents'):
+            return ""
+        
+        # Parçaları chunk_index'e göre sırala (metadata içinden)
+        docs_with_meta = []
+        for i in range(len(results['documents'])):
+            docs_with_meta.append({
+                "text": results['documents'][i],
+                "index": results['metadatas'][i].get('chunk_index', 0) if results['metadatas'] else 0
+            })
+        
+        docs_with_meta.sort(key=lambda x: x['index'])
+        return "\n".join([d['text'] for d in docs_with_meta])
+    except Exception as e:
+        logger.error(f"Dosya metni çekilirken hata ({filename}): {e}")
+        return ""
+
+async def get_missing_info(text: str) -> List[str]:
+    """
+    LangGraph validator_app kullanarak metindeki eksik alanları bulur.
+    """
+    try:
+        if not text or len(text.strip()) < 10:
+            return []
+        
+        initial_state = {
+            "extracted_text": text,
+            "validation_results": {}
+        }
+        final_state = await validator_app.ainvoke(initial_state)
+        results = final_state.get("validation_results", {})
+        return results.get("missing_fields", [])
+    except Exception as e:
+        logger.error(f"Eksik bilgi tespiti hatası: {e}")
+        return []
 
 # ==========================================
 # 3. ENDPOINTS
 # ==========================================
 class SoruModel(BaseModel):
     soru: str
-    top_k: Optional[int] = 10 
+    top_k: Optional[int] = 10
+    dosya_adi: Optional[str] = None
+    dosya_adlari: Optional[List[str]] = None # [YENİ]
+    session_id: Optional[str] = None
 
-@app.post("/yukle")
-async def yukle(file: UploadFile = File(...)):
+class ValidationCompleteModel(BaseModel):
+    dosya_adi: str
+    alanlar: Dict[str, str]
+    session_id: Optional[str] = None
+
+async def dosya_isle_ve_kaydet(file: UploadFile):
+    """Tek bir dosyayı işler, OCR yapar ve ChromaDB'ye kaydeder."""
     if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(400, "Sadece PDF.")
+        raise HTTPException(400, f"Sadece PDF kabul edilir: {file.filename}")
     
     path = os.path.join(state.documents_folder, file.filename)
     try:
@@ -272,20 +336,65 @@ async def yukle(file: UploadFile = File(...)):
             except: pass
 
         async with aiofiles.open(path, 'wb') as f:
-            await f.write(await file.read())
+            content = await file.read()
+            await f.write(content)
             
         chunks = await run_in_threadpool(worker_process, path, file.filename)
+        logger.info(f"✅ İşleme Tamamlandı: {file.filename} -> {len(chunks)} parça oluşturuldu.")
         
         if chunks and state.collection is not None:
             ids = [f"{file.filename}_{c['metadata']['chunk_index']}_{uuid.uuid4().hex[:6]}" for c in chunks]
             docs = [c["metin"] for c in chunks]
             metas = [metadata_temizle(c["metadata"]) for c in chunks]
-            state.collection.add(ids=ids, documents=docs, metadatas=metas)
             
-        return {"success": True, "mesaj": f"Yüklendi: {len(chunks)} parça.", "chunk_sayisi": len(chunks)}
+            for m in metas:
+                if 'dosya' not in m: m['dosya'] = file.filename
+
+            state.collection.add(ids=ids, documents=docs, metadatas=metas)
+            logger.info(f"📥 {len(chunks)} parça ChromaDB'ye eklendi.")
+        
+        full_text = "\n".join([c["metin"] for c in chunks])
+        missing_info = await get_missing_info(full_text)
+        
+        return {
+            "filename": file.filename,
+            "chunk_sayisi": len(chunks),
+            "missing_info": missing_info
+        }
     except Exception as e:
-        logger.error(f"Yükleme Hatası: {e}")
+        logger.error(f"Dosya İşleme Hatası ({file.filename}): {e}")
+        raise e
+
+@app.post("/yukle")
+async def yukle(files: List[UploadFile] = File(...)):
+    processed_files = []
+    total_chunks = 0
+    
+    try:
+        for file in files:
+            res = await dosya_isle_ve_kaydet(file)
+            processed_files.append(res)
+            total_chunks += res["chunk_sayisi"]
+            
+        return {
+            "success": True, 
+            "mesaj": f"{len(processed_files)} dosya yüklendi.", 
+            "chunk_sayisi": total_chunks,
+            "files": processed_files,
+            "missing_info": processed_files[0]["missing_info"] if processed_files else [] # İlk dosyanınkini dön (fallback)
+        }
+    except Exception as e:
         return JSONResponse(500, {"detail": str(e)})
+
+@app.post("/api/validator/complete")
+async def validator_complete(req: ValidationCompleteModel):
+    try:
+        # Gerçek bir sistemde burada veritabanı veya PDF güncellenir.
+        # Şimdilik başarılı simülasyonu yapıyoruz.
+        logger.info(f"✅ Bilgiler güncellendi: {req.dosya_adi} -> {req.alanlar}")
+        return {"success": True, "mesaj": "Bilgiler başarıyla güncellendi."}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 @app.post("/sor")
 async def soru_sor(req: SoruModel):
@@ -298,10 +407,24 @@ async def soru_sor(req: SoruModel):
         if state.collection is None:
             return {"cevap": "Veritabanı hazır değil.", "kaynaklar": []}
 
-        # Vektör Arama
-        results = state.collection.query(query_texts=[soru], n_results=req.top_k)
+        # Vektör Arama (dosya_adi varsa yalnızca o belgeyi sorgula)
+        query_kwargs: Dict[str, Any] = {
+            "query_texts": [soru],
+            "n_results": req.top_k
+        }
+        if req.dosya_adlari and len(req.dosya_adlari) > 0:
+            logger.info(f"🔍 Çoklu Dosya Filtresi Uygulanıyor: {req.dosya_adlari}")
+            query_kwargs["where"] = {"dosya": {"$in": req.dosya_adlari}}
+        elif req.dosya_adi:
+            logger.info(f"🔍 Sorgu Filtresi Uygulanıyor: {req.dosya_adi}")
+            query_kwargs["where"] = {"dosya": req.dosya_adi}
+        else:
+            logger.info("🌐 Genel Sorgu Yapılıyor (Filtre Yok)")
+
+        results = state.collection.query(**query_kwargs)
         if not results.get('documents') or not results['documents'][0]:
-             return {"cevap": "Bilgi bulunamadı.", "kaynaklar": []}
+             logger.warning(f"⚠️ Sonuç Bulunamadı! Soru: {soru}")
+             return {"cevap": "Bilgi bulunamadı. Belge düzgün okunmamış olabilir.", "kaynaklar": []}
 
         # Filtreleme
         raw_docs: List[str] = list(results['documents'][0]) if results.get('documents') and results['documents'] else []
@@ -333,15 +456,40 @@ async def soru_sor(req: SoruModel):
         ]
 
         # ChatGPT
+        # Eksik bilgi tespiti için sistem mesajını güçlendiriyoruz
+        system_msg = (
+            "Sen bir hukuk asistanısın. Verilen BAĞLAM'a göre SORU'yu yanıtla. "
+            "Eğer belgede kritik bilgiler (TC No, IBAN, E-posta, Ad Soyad, Tarih vb.) eksikse "
+            "yanıtının sonuna JSON formatında 'MISSING_INFO: [\"alan1\", \"alan2\"]' şeklinde bir not ekle."
+        )
+        
         resp = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "Sen hukuk asistanısın. Bağlamı kullanarak cevapla."},
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": f"BAĞLAM:\n{ai_baglam}\n\nSORU: {soru}"}
             ],
             temperature=0.3
         )
-        return {"cevap": resp.choices[0].message.content, "kaynaklar": kaynaklar}
+        
+        full_cevap = resp.choices[0].message.content or ""
+        cevap = full_cevap
+        
+        # Önce regex ile GPT'nin kendi cevabındaki notu temizle (varsa)
+        match = re.search(r"MISSING_INFO:\s*(\[.*?\])", full_cevap)
+        if match:
+            cevap = cevap.replace(match.group(0), "").strip()
+            
+        # [YENİ] Daha güvenilir LangGraph validator_app ile kontrol et
+        # Bağlamı ve cevabı birleştirip kontrol ediyoruz
+        kontrol_metni = f"{ai_baglam}\n{cevap}"
+        missing_fields = await get_missing_info(kontrol_metni)
+
+        return {
+            "cevap": cevap, 
+            "kaynaklar": kaynaklar,
+            "missing_info": missing_fields
+        }
 
     except Exception as e:
         logger.error(f"Hata: {e}")
@@ -396,10 +544,14 @@ async def foto_analiz(file: UploadFile = File(...), soru: str = Form("Bu belgede
         )
         
         ai_cevabi = response.choices[0].message.content
+        
+        # [YENİ] Fotoğraf analizi sonrası eksik bilgi kontrolü
+        missing_info = await get_missing_info(okunan_metin)
 
         return {
             "cevap": ai_cevabi,
-            "okunan_ham_veri": okunan_metin # Frontend isterse ham halini de gösterebilir
+            "okunan_ham_veri": okunan_metin,
+            "missing_info": missing_info
         }
 
     except Exception as e:
@@ -831,6 +983,106 @@ async def execute_task(req: ExecuteTaskRequest, x_user_email: str = Header(defau
     
     return {"status": "error", "message": "Geçersiz action."}
 
+
+# ==========================================
+# AJAN PYDANTIC MODELLERİ
+# ==========================================
+class TaskRequest(BaseModel):
+    metin: str
+
+class ProactiveRequest(BaseModel):
+    sohbet_gecmisi: List[str]
+
+class AuditorRequest(BaseModel):
+    doc1_text: Optional[str] = None
+    doc2_text: Optional[str] = None
+    doc1_name: Optional[str] = None
+    doc2_name: Optional[str] = None
+    filenames: Optional[List[str]] = None # [YENİ]
+
+class ValidatorRequest(BaseModel):
+    extracted_text: str
+
+# ==========================================
+# AJAN ENDPOINT'LERİ (LangGraph)
+# ==========================================
+
+@app.post("/agent/task-extract", tags=["Agents"])
+async def extract_task_endpoint(req: TaskRequest):
+    """Metinden görev çıkartan LangGraph akışını tetikler."""
+    try:
+        baslangic_durumu = {"metin": req.metin, "cikarim_sonucu": None, "islem_durumu": "BASLADI"}
+        tamamlanmis_durum = task_graph.invoke(baslangic_durumu)
+        sonuc_model = tamamlanmis_durum.get("cikarim_sonucu")
+        sonuc_dict = sonuc_model.dict() if sonuc_model else None
+        return {"success": True, "islem_durumu": tamamlanmis_durum.get("islem_durumu"), "data": sonuc_dict}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Görev çıkarımı sırasında hata: {str(e)}")
+
+
+@app.post("/agent/proactive-search", tags=["Agents"])
+async def proactive_search_endpoint(req: ProactiveRequest):
+    """Sohbet geçmişinden ilgi alanı çıkarıp web araması yapar."""
+    try:
+        baslangic_durumu = {"sohbet_gecmisi": req.sohbet_gecmisi, "ilgi_alanlari": [], "arama_sonuclari": {}}
+        sonuc = proactive_graph.invoke(baslangic_durumu)
+        return {"success": True, "ilgi_alanlari": sonuc.get("ilgi_alanlari", []), "arama_sonuclari": sonuc.get("arama_sonuclari", {})}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Proaktif arama sırasında hata: {str(e)}")
+
+
+@app.post("/agent/audit-documents", tags=["Agents"])
+async def audit_documents_endpoint(req: AuditorRequest):
+    """Dokümanları karşılaştırarak farklılıkları raporlar."""
+    try:
+        texts = []
+        if req.filenames:
+            for fname in req.filenames:
+                txt = get_full_text_by_filename(fname)
+                if txt: texts.append({"name": fname, "text": txt})
+        
+        # Geriye dönük uyumluluk
+        if not texts:
+            doc1 = req.doc1_text or (get_full_text_by_filename(req.doc1_name) if req.doc1_name else None)
+            doc2 = req.doc2_text or (get_full_text_by_filename(req.doc2_name) if req.doc2_name else None)
+            if doc1: texts.append({"name": req.doc1_name or "Belge 1", "text": doc1})
+            if doc2: texts.append({"name": req.doc2_name or "Belge 2", "text": doc2})
+
+        if len(texts) < 2:
+            raise HTTPException(400, "Karşılaştırılacak en az iki belge gereklidir.")
+
+        # Auditor State'i hazırla (Şimdilik ilk ikisini karşılaştırıyor ama altyapı hazır)
+        initial_state = {
+            "doc1_text": texts[0]["text"], 
+            "doc2_text": texts[1]["text"], 
+            "comparison_results": {}, 
+            "executive_summary": ""
+        }
+        
+        final_state = await auditor_app.ainvoke(initial_state)
+        res = final_state.get("comparison_results", {})
+        res["timestamp"] = datetime.datetime.now().isoformat()
+
+        return {"success": True, "comparison_results": res, "executive_summary": final_state.get("executive_summary", "")}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Doküman denetimi sırasında hata: {str(e)}")
+
+
+@app.post("/agent/validate-document", tags=["Agents"])
+async def validate_document_endpoint(req: ValidatorRequest):
+    """Belgeyi analiz ederek eksik alanları raporlar."""
+    try:
+        initial_state = {"extracted_text": req.extracted_text, "validation_results": {}}
+        final_state = await validator_app.ainvoke(initial_state)
+        return {"success": True, "validation_results": final_state.get("validation_results", {})}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Doküman doğrulaması sırasında hata: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=300)
+    print("OCR-RAG Unified API baslatiliyor... port 8000")
+    uvicorn.run("main_api:app", host="0.0.0.0", port=8000, reload=True, timeout_keep_alive=300)
