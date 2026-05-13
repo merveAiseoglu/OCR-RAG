@@ -441,7 +441,10 @@ function App() {
       const prevHistory = historyRef.current;
       const sessionIndex = prevHistory.findIndex(h => h.id === currentSessionId);
       let updatedHistory = [...prevHistory];
-      
+
+      if (sessionIndex !== -1) {
+        updatedHistory[sessionIndex] = {
+          ...updatedHistory[sessionIndex],
           messages: chatMessages,
           missingFields: missingFields,
           auditorReportData: auditorReportData || undefined,
