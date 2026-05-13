@@ -394,6 +394,175 @@ async def soru_sor(req: SoruModel):
 
     logger.info(f"/sor isteği: '{soru[:80]}...' (top_k={req.top_k})")
 
+    # ── Intent Detection 1: Cross-Document Audit ───────────────────────────────
+    AUDIT_TRIGGERS = [
+        "kıyasla", "kiyasla", "karşılaştır", "karsilastir",
+        "fark nedir", "değişen maddeler", "degisen maddeler",
+        "çapraz denetle", "capraz denetle", "iki belge", "belgeler arasında",
+        "belgeler arasinda"
+    ]
+    soru_lower = soru.lower()
+    if any(trigger in soru_lower for trigger in AUDIT_TRIGGERS):
+        logger.info("🔍 Audit intent algılandı — belge karşılaştırması yönlendiriliyor.")
+        try:
+            # Hangi dosyalar var? dosya_adlari öncelikli, yoksa ChromaDB'den bul
+            audit_filenames: List[str] = []
+            if req.dosya_adlari and len(req.dosya_adlari) >= 2:
+                audit_filenames = req.dosya_adlari[:2]
+            elif state.collection is not None:
+                # En son eklenen benzersiz dosya adlarından ilk 2'yi al
+                try:
+                    all_meta = state.collection.get()
+                    seen: list = []
+                    for m in (all_meta.get("metadatas") or []):
+                        fn = (m or {}).get("dosya")
+                        if fn and fn not in seen:
+                            seen.append(fn)
+                    audit_filenames = seen[:2]
+                except Exception as _e:
+                    logger.warning(f"ChromaDB dosya listesi alınamadı: {_e}")
+
+            if len(audit_filenames) < 2:
+                return {
+                    "cevap": "Karşılaştırma için iki belge yükleyin.",
+                    "kaynaklar": [],
+                    "missing_info": [],
+                    "intent": "audit"
+                }
+
+            # Dosyaların tam metinlerini çek
+            doc1_text = get_full_text_by_filename(audit_filenames[0])
+            doc2_text = get_full_text_by_filename(audit_filenames[1])
+
+            if not doc1_text or not doc2_text:
+                return {
+                    "cevap": "Karşılaştırma için her iki belgenin de içeriği gerekli. Belgeleri yeniden yükleyin.",
+                    "kaynaklar": [],
+                    "missing_info": [],
+                    "intent": "audit"
+                }
+
+            audit_initial = {
+                "doc1_text": doc1_text,
+                "doc2_text": doc2_text,
+                "comparison_results": {},
+                "executive_summary": "",
+                "error": None
+            }
+            audit_final = await auditor_app.ainvoke(audit_initial)
+
+            if audit_final.get("error"):
+                return {
+                    "cevap": f"Belge karşılaştırması sırasında hata oluştu: {audit_final['error']}",
+                    "kaynaklar": [],
+                    "missing_info": [],
+                    "intent": "audit"
+                }
+
+            comp = audit_final.get("comparison_results", {})
+            summary = audit_final.get("executive_summary", "")
+            comp["timestamp"] = datetime.datetime.now().isoformat()
+
+            logger.info(f"✅ Audit tamamlandı ({audit_filenames[0]} vs {audit_filenames[1]})")
+            return {
+                "cevap": summary or "Karşılaştırma tamamlandı.",
+                "kaynaklar": [
+                    {"source": audit_filenames[0], "page": 0, "type": "audit", "score": 1.0},
+                    {"source": audit_filenames[1], "page": 0, "type": "audit", "score": 1.0},
+                ],
+                "missing_info": [],
+                "intent": "audit",
+                "audit_result": {
+                    "success": True,
+                    "comparison_results": comp,
+                    "executive_summary": summary,
+                    "doc1": audit_filenames[0],
+                    "doc2": audit_filenames[1]
+                }
+            }
+        except Exception as _ae:
+            logger.error(f"Audit intent işleme hatası: {_ae}", exc_info=True)
+            # Hata durumunda RAG'a düş
+    # ── Intent Detection 2: Missing Info Validator ─────────────────────────────
+    VALIDATOR_TRIGGERS = [
+        "eksik bilgi", "eksik alan", "belgeyi doğrula", "belgeyi dogrula",
+        "belge tam mı", "belge tam mi", "eksik", "doğrula", "dogrula",
+        "neyi eksik", "ne eksik"
+    ]
+    if any(trigger in soru_lower for trigger in VALIDATOR_TRIGGERS):
+        logger.info("🔍 Validator intent algılandı — eksik bilgi kontrolü yönlendiriliyor.")
+        try:
+            # Hangi belge metni kullanılacak?
+            val_text = ""
+            val_filenames = req.dosya_adlari or ([req.dosya_adi] if req.dosya_adi else [])
+            if val_filenames and state.collection is not None:
+                val_text = get_full_text_by_filename(val_filenames[0])
+            elif state.collection is not None:
+                # Hiç dosya belirtilmediyse koleksiyondaki tüm metni al (ilk dosya)
+                try:
+                    all_meta = state.collection.get()
+                    seen_val: list = []
+                    for m in (all_meta.get("metadatas") or []):
+                        fn = (m or {}).get("dosya")
+                        if fn and fn not in seen_val:
+                            seen_val.append(fn)
+                    if seen_val:
+                        val_text = get_full_text_by_filename(seen_val[0])
+                except Exception as _e:
+                    logger.warning(f"ChromaDB dosya listesi alınamadı (validator): {_e}")
+
+            if not val_text.strip():
+                return {
+                    "cevap": "Doğrulanacak belge bulunamadı. Lütfen önce bir belge yükleyin.",
+                    "kaynaklar": [],
+                    "missing_info": [],
+                    "intent": "validator"
+                }
+
+            val_initial = {
+                "extracted_text": val_text,
+                "validation_results": {},
+                "error": None
+            }
+            val_final = await validator_app.ainvoke(val_initial)
+
+            if val_final.get("error"):
+                return {
+                    "cevap": f"Belge doğrulama sırasında hata: {val_final['error']}",
+                    "kaynaklar": [],
+                    "missing_info": [],
+                    "intent": "validator"
+                }
+
+            vres = val_final.get("validation_results", {})
+            missing = vres.get("missing_fields", [])
+            is_complete = vres.get("is_complete", False)
+            doc_type = vres.get("document_type", "Bilinmiyor")
+
+            if is_complete:
+                cevap_val = f"✅ Belge tam görünüyor ({doc_type}). Eksik alan tespit edilmedi."
+            else:
+                cevap_val = (
+                    f"⚠️ Belge türü: {doc_type}. "
+                    f"Eksik alanlar: {', '.join(missing) if missing else 'Yok'}."
+                )
+
+            logger.info(f"✅ Validator tamamlandı. Eksik: {missing}")
+            return {
+                "cevap": cevap_val,
+                "kaynaklar": [],
+                "missing_info": missing,
+                "intent": "validator",
+                "validation_result": {
+                    "success": True,
+                    "validation_results": vres
+                }
+            }
+        except Exception as _ve:
+            logger.error(f"Validator intent işleme hatası: {_ve}", exc_info=True)
+            # Hata durumunda RAG'a düş
+    # ── End Intent Detection ────────────────────────────────────────────────────
+
     try:
         if state.collection is None:
             return {"cevap": "Veritabanı hazır değil.", "kaynaklar": [], "missing_info": []}
