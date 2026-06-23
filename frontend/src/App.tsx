@@ -202,6 +202,7 @@ function App() {
   // --- AI Feature States ---
   const [validatorOpen, setValidatorOpen] = useState(false);
   const [auditorReportData, setAuditorReportData] = useState<AuditorResponse | null>(null);
+  const [auditData, setAuditData] = useState<any>(null);
   const [rightTab, setRightTab] = useState<'calendar' | 'validator' | 'auditor'>('calendar');
   const [isRightShaking, setIsRightShaking] = useState(false); // Titreme efekti
   const [missingFields, setMissingFields] = useState<string[]>([]);
@@ -242,14 +243,14 @@ function App() {
         const userInfo = await axios.get('https://www.googleapis.com/oauth2/v3/userinfo', {
           headers: { Authorization: `Bearer ${tokenResponse.access_token}` }
         });
-        
+
         const profile = {
           email: userInfo.data.email,
           name: userInfo.data.name,
           picture: userInfo.data.picture,
           access_token: tokenResponse.access_token
         };
-        
+
         setUserProfile(profile);
         localStorage.setItem('userProfile', JSON.stringify(profile));
         setShowLoginModal(false);
@@ -290,9 +291,9 @@ function App() {
         if (response.data && response.data.bulunanlar && response.data.bulunanlar.length > 0) {
           setProactiveFindings(response.data.bulunanlar);
         }
-      } catch (error) {}
+      } catch (error) { }
     };
-    
+
     checkProactive();
     const interval = setInterval(checkProactive, 60000);
     return () => clearInterval(interval);
@@ -335,7 +336,7 @@ function App() {
         .map(e => ({ ...e, dateObj: new Date(e.start) }))
         .filter(e => e.dateObj > now)
         .sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
-      
+
       if (upcoming.length > 0) {
         setClosestEvent(upcoming[0]);
       } else {
@@ -368,22 +369,22 @@ function App() {
     }
 
     const lastMsg = chatMessages[chatMessages.length - 1];
-    
+
     // [YENİ] Eğer metin içinde risk analizi geçiyorsa ve 2 dosya varsa tetikle
     const auditTriggers = ['farkları bul', 'risk analizi yap', 'karşılaştır', 'denetle', 'analiz et', 'farklar', 'riskler'];
     const isAuditTurn = lastMsg.content && auditTriggers.some(t => lastMsg.content.toLowerCase().includes(t));
-    
+
     if (isAuditTurn && sessionFiles.length >= 2) {
-       if (!auditorReportData) {
-          handleAuditDocuments(sessionFiles);
-       }
-       // Auditor sekmesine geç ve paneli aç (Requirement 3)
-       setRightTab('auditor');
-       setIsRightExpanded(true);
-       
-       // Eğer denetim yapılıyorsa "Eksik Bilgi" modülünü bu turda çalıştırma (Requirement 4)
-       setMissingFields([]);
-       return;
+      if (!auditorReportData) {
+        handleAuditDocuments(sessionFiles);
+      }
+      // Auditor sekmesine geç ve paneli aç (Requirement 3)
+      setRightTab('auditor');
+      setIsRightExpanded(true);
+
+      // Eğer denetim yapılıyorsa "Eksik Bilgi" modülünü bu turda çalıştırma (Requirement 4)
+      setMissingFields([]);
+      return;
     }
 
     // Eğer kullanıcı mesaj attıysa veya bot hala yükleniyorsa, yan paneli temizle (yeni analiz başlıyor)
@@ -395,10 +396,10 @@ function App() {
     if (lastMsg.type === 'bot' && !lastMsg.loading) {
       // 1. Metadata'dan al
       let detectedFields: string[] = lastMsg.missingFields ? [...lastMsg.missingFields] : [];
-      
+
       // 2. Metin içinden parsing (Requirement 4)
       const content = lastMsg.content || '';
-      
+
       // JSON Formatı (MISSING_INFO: ["TC No"])
       const jsonMatch = content.match(/MISSING_INFO:\s*(\[.*?\])/);
       if (jsonMatch) {
@@ -407,7 +408,7 @@ function App() {
           if (Array.isArray(parsed)) {
             parsed.forEach(f => { if (!detectedFields.includes(f)) detectedFields.push(f); });
           }
-        } catch(e) {}
+        } catch (e) { }
       }
 
       // Metinsel kalıplar (Requirement 4)
@@ -416,9 +417,9 @@ function App() {
         const lowerContent = content.toLowerCase();
         const lowerField = field.toLowerCase();
         if (lowerContent.includes(lowerField)) {
-          if (lowerContent.includes(lowerField + ' eksik') || 
-              lowerContent.includes(lowerField + ' alanı boş') ||
-              lowerContent.includes(lowerField + ' bulunamadı')) {
+          if (lowerContent.includes(lowerField + ' eksik') ||
+            lowerContent.includes(lowerField + ' alanı boş') ||
+            lowerContent.includes(lowerField + ' bulunamadı')) {
             if (!detectedFields.includes(field)) detectedFields.push(field);
           }
         }
@@ -426,7 +427,7 @@ function App() {
 
       // 3. State Güncelle
       setMissingFields(detectedFields);
-      
+
       if (detectedFields.length > 0) {
         setRightTab('validator');
         setIsRightExpanded(true);
@@ -455,7 +456,7 @@ function App() {
         const contentStr = firstUserMsg?.content ? String(firstUserMsg.content) : '';
         const contextStr = firstUserMsg?.fileContext ? String(firstUserMsg.fileContext) : '';
         const title = contentStr || contextStr || 'Yeni Sohbet';
-        
+
         const newSession: ChatSession = {
           id: currentSessionId,
           title: title.substring(0, 40) + (title.length > 40 ? '...' : ''),
@@ -466,9 +467,9 @@ function App() {
         };
         updatedHistory = [newSession, ...updatedHistory];
       }
-      
+
       setHistory(updatedHistory);
-      axiosInstance.post(`/api/history`, updatedHistory).catch(() => {});
+      axiosInstance.post(`/api/history`, updatedHistory).catch(() => { });
     }
   }, [chatMessages, currentSessionId, auditorReportData, sessionFiles]); // [GÜNCEL]
 
@@ -515,7 +516,7 @@ function App() {
       setShowLoginModal(true);
       return;
     }
-    
+
     try {
       const res = await axiosInstance.post<Note>(`/api/notes`, { content: newNote.trim() });
       setNotes((prev) => [res.data, ...prev]);
@@ -545,7 +546,7 @@ function App() {
       setShowLoginModal(true);
       return;
     }
-    
+
     setIsCalendarLoading(true);
     try {
       await axiosInstance.post(`/api/action/calendar/add`, {
@@ -569,7 +570,7 @@ function App() {
     setCurrentSessionId(session.id);
     setChatMessages(session.messages || []);
     setIsMobileMenuOpen(false);
-    
+
     // Validator & Auditor verilerini yükle
     setMissingFields(session.missingFields || []);
     setAuditorReportData(session.auditorReportData || null);
@@ -592,21 +593,21 @@ function App() {
     historyRef.current = updated;
     try {
       await axiosInstance.post(`/api/history`, updated);
-    } catch (err) {}
-    
+    } catch (err) { }
+
     if (currentSessionId === id) {
       startNewChat();
     }
   };
 
   const handleUpdateHistoryItem = async (id: string, updates: Partial<ChatSession>, e?: React.MouseEvent) => {
-    if(e) e.stopPropagation();
+    if (e) e.stopPropagation();
     const updated = history.map(h => h.id === id ? { ...h, ...updates } : h);
     setHistory(updated);
     historyRef.current = updated;
     try {
       await axiosInstance.post(`/api/history`, updated);
-    } catch (err) {}
+    } catch (err) { }
   };
 
   const handleDeleteNote = async (id: string, e: React.MouseEvent) => {
@@ -620,7 +621,7 @@ function App() {
   };
 
   const handleUpdateNote = async (id: string, updates: Partial<Note>, e?: React.MouseEvent) => {
-    if(e) e.stopPropagation();
+    if (e) e.stopPropagation();
     try {
       await axiosInstance.put(`/api/notes/update/${id}`, updates);
       setNotes((prev) => prev.map(n => n.id === id ? { ...n, ...updates } : n));
@@ -644,7 +645,7 @@ function App() {
 
   const handleAuditDocuments = async (fileList: string[]) => {
     if (fileList.length < 2) return;
-    
+
     setRightTab('auditor');
     setIsRightExpanded(true);
     setIsRightShaking(true);
@@ -713,7 +714,7 @@ function App() {
       .then(resp => {
         const sonuc = resp.data.arama_sonuclari || resp.data.rapor;
         if (sonuc) setAsistanRaporu(sonuc);
-      }).catch(() => {});
+      }).catch(() => { });
 
     try {
       const response = await axiosInstance.post<QueryResponse & { missing_info?: string[] }>(`/sor`, {
@@ -721,17 +722,17 @@ function App() {
         top_k: 15,
         dosya_adlari: sessionFiles // [GÜNCEL] Oturumdaki tüm dosyaları sorgula
       });
-      
+
       setChatMessages(prev => prev.map(msg =>
         msg.id === botId
-          ? { 
-              ...msg, 
-              loading: false, 
-              content: response.data.cevap, 
-              kaynaklar: response.data.kaynaklar, 
-              buttonsType: 'soru',
-              missingFields: response.data.missing_info // [YENİ] Metadata'yı mesaja ekle
-            }
+          ? {
+            ...msg,
+            loading: false,
+            content: response.data.cevap,
+            kaynaklar: response.data.kaynaklar,
+            buttonsType: 'soru',
+            missingFields: response.data.missing_info // [YENİ] Metadata'yı mesaja ekle
+          }
           : msg
       ));
 
@@ -775,13 +776,13 @@ function App() {
       );
       setChatMessages(prev => prev.map(msg =>
         msg.id === botId
-          ? { 
-              ...msg, 
-              loading: false, 
-              content: response.data.cevap, 
-              buttonsType: 'foto',
-              missingFields: response.data.missing_info // [YENİ]
-            }
+          ? {
+            ...msg,
+            loading: false,
+            content: response.data.cevap,
+            buttonsType: 'foto',
+            missingFields: response.data.missing_info // [YENİ]
+          }
           : msg
       ));
     } catch (error: any) {
@@ -802,7 +803,7 @@ function App() {
     setHasStartedChat(true);
     const userText = inputValue.trim();
     setInputValue('');
-    
+
     const userId = Date.now().toString();
     const fileListStr = files.map(f => `📄 ${f.name}`).join(', ');
     setChatMessages(prev => [...prev, { id: userId, type: 'user', content: userText || 'Lütfen bu belgeleri sisteme yükle ve analiz et.', fileContext: fileListStr }]);
@@ -827,7 +828,7 @@ function App() {
       );
 
       // [YENİ] İlk yüklemede gelen eksik bilgileri temizleyip set et
-      setMissingFields([]); 
+      setMissingFields([]);
 
       // Dosya adlarını session'a kaydet
       const newFileNames = files.map(f => f.name);
@@ -838,10 +839,10 @@ function App() {
         });
         return combined;
       });
-      
+
       if (files.length > 0) setCurrentFileName(files[files.length - 1].name);
 
-        if (userText) {
+      if (userText) {
         // Kullanıcı bir soru yazdıysa
         setChatMessages(prev => prev.filter(msg => msg.id !== botId));
         const answerBotId = (Date.now() + 2).toString();
@@ -854,14 +855,14 @@ function App() {
           });
           setChatMessages(prev => prev.map(msg =>
             msg.id === answerBotId
-              ? { 
-                  ...msg, 
-                  loading: false, 
-                  content: qResp.data.cevap, 
-                  kaynaklar: qResp.data.kaynaklar, 
-                  buttonsType: 'soru',
-                  missingFields: qResp.data.missing_info // [YENİ]
-                }
+              ? {
+                ...msg,
+                loading: false,
+                content: qResp.data.cevap,
+                kaynaklar: qResp.data.kaynaklar,
+                buttonsType: 'soru',
+                missingFields: qResp.data.missing_info // [YENİ]
+              }
               : msg
           ));
         } catch (qErr: any) {
@@ -872,19 +873,54 @@ function App() {
           ));
         }
       } else {
-        // Soru yoksa kısa bir onay mesajı göster
         const fileNames = files.map(f => f.name).join(', ');
+        
         setChatMessages(prev => prev.map(msg =>
           msg.id === botId
             ? { 
                 ...msg, 
                 loading: false, 
-                content: `✅ ${files.length} belge hazır: ${fileNames}. Şimdi bu belgeler hakkında sorularınızı sorabilir veya karşılaştırma yapabilirsiniz.`, 
+                content: `✅ ${files.length} belge hazır: ${fileNames}. Otonom analiz başlatılıyor...`, 
                 buttonsType: 'pdf',
-                missingFields: uploadResp.data.missing_info // [YENİ]
+                missingFields: uploadResp.data.missing_info
               }
             : msg
         ));
+
+        const otonomSoru = files.length === 1
+          ? "Bu belge tam mı, eksik olan kısımları doğrula. Lütfen cevabını tamamen TÜRKÇE ver."
+          : "Bu belgeleri karşılaştır ve bana aralarındaki riskleri çıkar. Lütfen analizini ve risk raporunu TAMAMEN TÜRKÇE yaz.";
+
+        const autoBotId = (Date.now() + 3).toString();
+        setChatMessages(prev => [...prev, { id: autoBotId, type: 'bot', content: '', loading: true }]);
+
+        try {
+          const qResp = await axiosInstance.post<QueryResponse & { missing_info?: string[] }>(`/sor`, {
+            soru: otonomSoru,
+            top_k: 15,
+            dosya_adlari: files.map(f => f.name) 
+          });
+
+          setChatMessages(prev => prev.map(msg =>
+            msg.id === autoBotId
+              ? { 
+                  ...msg, 
+                  loading: false, 
+                  content: qResp.data.cevap, 
+                  kaynaklar: qResp.data.kaynaklar, 
+                  buttonsType: 'soru',
+                  missingFields: qResp.data.missing_info
+                }
+              : msg
+          ));
+          setAuditData(qResp.data);
+        } catch (qErr: any) {
+          setChatMessages(prev => prev.map(msg =>
+            msg.id === autoBotId
+              ? { ...msg, loading: false, error: qErr.response?.data?.detail || 'Otonom analiz sırasında hata oluştu.' }
+              : msg
+          ));
+        }
       }
     } catch (error: any) {
       const errMsg = error.code === 'ECONNABORTED'
@@ -906,13 +942,13 @@ function App() {
   };
 
   const isWarningColor = closestEvent && new Date(closestEvent.start).getTime() - new Date().getTime() < 1000 * 60 * 60 * 24; // Less than 1 day
-  const countdownColorClass = isWarningColor 
-    ? 'border-orange-500 shadow-orange-500/20' 
+  const countdownColorClass = isWarningColor
+    ? 'border-orange-500 shadow-orange-500/20'
     : 'border-indigo-500/50 shadow-indigo-500/10';
 
   return (
     <div className="flex h-screen bg-white dark:bg-[#0f1115] text-slate-900 dark:text-slate-300 overflow-hidden font-sans selection:bg-indigo-500/30 transition-colors duration-300">
-      
+
       {/* Login Prompt Modal */}
       {showLoginModal && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in">
@@ -983,18 +1019,18 @@ function App() {
 
       {/* Left Sidebar (Accordions) */}
       <div className={`fixed lg:static top-0 left-0 h-full bg-slate-50 dark:bg-[#12141a] border-r border-slate-200 dark:border-slate-800/50 z-50 transform transition-all duration-300 ease-in-out ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} ${isLeftExpanded ? 'w-80' : 'w-20'} flex flex-col`}>
-        
+
         {/* Header & Toggle */}
         <div className={`p-4 flex items-center border-b border-slate-200 dark:border-slate-800/50 h-[72px] transition-all duration-300 ${isLeftExpanded ? 'justify-between' : 'justify-center border-transparent'}`}>
           {isLeftExpanded && (
-            <button 
+            <button
               onClick={startNewChat}
               className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white rounded-xl py-2.5 px-4 flex items-center justify-center font-semibold text-sm shadow-md hover:shadow-lg transition-all animate-in fade-in group"
             >
               <PlusCircle className="w-5 h-5 mr-2 group-hover:rotate-90 transition-transform" /> Yeni Sohbet
             </button>
           )}
-          
+
           <button onClick={() => setIsLeftExpanded(!isLeftExpanded)} className={`p-1.5 text-slate-400 hover:text-slate-800 dark:hover:text-white rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors ${isLeftExpanded ? 'ml-2' : ''}`}>
             {isLeftExpanded ? <ChevronLeft className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
@@ -1002,10 +1038,10 @@ function App() {
 
         {/* Accordion Container */}
         <div className={`flex-1 overflow-y-auto scrollbar-hide flex flex-col transition-all duration-300 ${!isLeftExpanded ? 'items-center justify-center gap-y-6 pb-20' : ''}`}>
-          
+
           {!isLeftExpanded && (
             <div className="relative group">
-              <button 
+              <button
                 onClick={startNewChat}
                 className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-3 rounded-xl shadow-md hover:shadow-lg transition-all duration-300 flex items-center justify-center"
               >
@@ -1017,9 +1053,9 @@ function App() {
 
           {/* History Accordion */}
           <div className={`${isLeftExpanded ? 'border-b border-slate-200 dark:border-slate-800/50 w-full' : 'relative group'} flex flex-col min-h-0 transition-all duration-300`}>
-            <button 
-              onClick={() => { if(isLeftExpanded) setOpenAccordions(p => ({ ...p, history: !p.history })); }}
-              className={isLeftExpanded 
+            <button
+              onClick={() => { if (isLeftExpanded) setOpenAccordions(p => ({ ...p, history: !p.history })); }}
+              className={isLeftExpanded
                 ? "p-4 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-[#1a1d24] transition-colors w-full"
                 : "p-3 rounded-xl bg-slate-100 dark:bg-[#1a1d24] hover:bg-slate-200 dark:hover:bg-slate-800/80 transition-all duration-300 text-slate-500 hover:text-indigo-500 shadow-sm flex items-center justify-center"
               }
@@ -1031,18 +1067,18 @@ function App() {
               {isLeftExpanded && (openAccordions.history ? <ChevronUp className="w-4 h-4 text-slate-400 flex-shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 flex-shrink-0" />)}
             </button>
             {!isLeftExpanded && (
-               <span className="absolute left-full top-1/2 -translate-y-1/2 ml-4 px-2 py-1 bg-slate-800 dark:bg-slate-700 text-white text-xs rounded opacity-0 translate-x-0 group-hover:opacity-100 group-hover:translate-x-1 transition-all duration-300 whitespace-nowrap z-50 pointer-events-none shadow-lg">Geçmiş Sohbetler</span>
+              <span className="absolute left-full top-1/2 -translate-y-1/2 ml-4 px-2 py-1 bg-slate-800 dark:bg-slate-700 text-white text-xs rounded opacity-0 translate-x-0 group-hover:opacity-100 group-hover:translate-x-1 transition-all duration-300 whitespace-nowrap z-50 pointer-events-none shadow-lg">Geçmiş Sohbetler</span>
             )}
-            
+
             {isLeftExpanded && openAccordions.history && (
               <div className="p-2 space-y-1 max-h-64 overflow-y-auto scrollbar-hide animate-in slide-in-from-top-2">
                 {history.length === 0 ? (
                   <p className="text-center text-slate-400 text-xs py-4">Henüz bir geçmiş yok.</p>
                 ) : (
-                  [...history].sort((a,b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)).map((item) => (
-                    <div 
-                      key={item.id} 
-                      onClick={() => { if(editingHistoryId !== item.id) loadHistoryItem(item); }} 
+                  [...history].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)).map((item) => (
+                    <div
+                      key={item.id}
+                      onClick={() => { if (editingHistoryId !== item.id) loadHistoryItem(item); }}
                       className={`p-2.5 bg-white dark:bg-[#1a1d24] border ${item.pinned ? 'border-indigo-300 dark:border-indigo-500/50' : 'border-slate-200 dark:border-slate-800/50'} rounded-lg cursor-pointer hover:border-indigo-400 transition-all group flex flex-col gap-2`}
                     >
                       <div className="flex items-center justify-between">
@@ -1058,8 +1094,8 @@ function App() {
                               }
                             }}
                             onBlur={() => {
-                               handleUpdateHistoryItem(item.id, { title: editingHistoryTitle });
-                               setEditingHistoryId(null);
+                              handleUpdateHistoryItem(item.id, { title: editingHistoryTitle });
+                              setEditingHistoryId(null);
                             }}
                             autoFocus
                             className="flex-1 bg-slate-50 dark:bg-[#12141a] text-sm text-slate-800 dark:text-slate-200 px-2 py-1 rounded outline-none border border-indigo-400"
@@ -1068,7 +1104,7 @@ function App() {
                         ) : (
                           <p className="text-sm text-slate-700 dark:text-slate-300 truncate flex-1 mr-2">{item.title}</p>
                         )}
-                        
+
                         <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity gap-1" onClick={(e) => e.stopPropagation()}>
                           <button onClick={() => { setEditingHistoryId(item.id); setEditingHistoryTitle(item.title); }} className="p-1 text-slate-400 hover:text-indigo-500 rounded hover:bg-slate-100 dark:hover:bg-slate-800">
                             <Edit2 className="w-3.5 h-3.5" />
@@ -1090,9 +1126,9 @@ function App() {
 
           {/* Notes Accordion */}
           <div className={`${isLeftExpanded ? 'border-b border-slate-200 dark:border-slate-800/50 w-full' : 'relative group'} flex flex-col min-h-0 transition-all duration-300`}>
-            <button 
-              onClick={() => { if(isLeftExpanded) setOpenAccordions(p => ({ ...p, notes: !p.notes })); }}
-              className={isLeftExpanded 
+            <button
+              onClick={() => { if (isLeftExpanded) setOpenAccordions(p => ({ ...p, notes: !p.notes })); }}
+              className={isLeftExpanded
                 ? "p-4 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-[#1a1d24] transition-colors w-full"
                 : "p-3 rounded-xl bg-slate-100 dark:bg-[#1a1d24] hover:bg-slate-200 dark:hover:bg-slate-800/80 transition-all duration-300 text-slate-500 hover:text-purple-500 shadow-sm flex items-center justify-center"
               }
@@ -1104,14 +1140,14 @@ function App() {
               {isLeftExpanded && (openAccordions.notes ? <ChevronUp className="w-4 h-4 text-slate-400 flex-shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 flex-shrink-0" />)}
             </button>
             {!isLeftExpanded && (
-               <span className="absolute left-full top-1/2 -translate-y-1/2 ml-4 px-2 py-1 bg-slate-800 dark:bg-slate-700 text-white text-xs rounded opacity-0 translate-x-0 group-hover:opacity-100 group-hover:translate-x-1 transition-all duration-300 whitespace-nowrap z-50 pointer-events-none shadow-lg">Notlarım</span>
+              <span className="absolute left-full top-1/2 -translate-y-1/2 ml-4 px-2 py-1 bg-slate-800 dark:bg-slate-700 text-white text-xs rounded opacity-0 translate-x-0 group-hover:opacity-100 group-hover:translate-x-1 transition-all duration-300 whitespace-nowrap z-50 pointer-events-none shadow-lg">Notlarım</span>
             )}
-            
+
             {isLeftExpanded && openAccordions.notes && (
               <div className="p-3 bg-slate-50 dark:bg-[#12141a] flex flex-col gap-3 animate-in slide-in-from-top-2">
                 <div className="flex items-center bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-700 rounded-lg p-1 shadow-sm focus-within:ring-1 focus-within:ring-purple-500">
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={newNote}
                     onChange={(e) => setNewNote(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleAddNote()}
@@ -1128,7 +1164,7 @@ function App() {
                   ) : notes.length === 0 ? (
                     <p className="text-xs text-slate-500 text-center py-2">Henüz not yok.</p>
                   ) : (
-                    [...notes].sort((a,b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)).map((n) => (
+                    [...notes].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)).map((n) => (
                       <div key={n.id} className={`bg-white dark:bg-[#1a1d24] p-3 rounded-lg border ${n.pinned ? 'border-purple-300 dark:border-purple-500/50' : 'border-slate-200 dark:border-slate-800/80'} shadow-sm text-xs text-slate-700 dark:text-slate-300 flex flex-col gap-2 group`}>
                         {editingNoteId === n.id ? (
                           <div className="flex flex-col gap-2" onClick={(e) => e.stopPropagation()}>
@@ -1189,7 +1225,7 @@ function App() {
             </h1>
           </div>
           <div className="flex items-center gap-4">
-            
+
             {/* User Profile Area or Guest Login Button */}
             {userProfile ? (
               <div className="flex items-center gap-3 bg-white dark:bg-[#1a1d24] pl-2 pr-4 py-1.5 rounded-full border border-slate-200 dark:border-slate-800 shadow-sm animate-in fade-in">
@@ -1214,8 +1250,8 @@ function App() {
               </div>
             )}
 
-            <button 
-              onClick={() => setIsDarkMode(!isDarkMode)} 
+            <button
+              onClick={() => setIsDarkMode(!isDarkMode)}
               className="p-2.5 rounded-full bg-slate-100 dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-all shadow-sm"
               title={isDarkMode ? "Açık Tema" : "Koyu Tema"}
             >
@@ -1235,7 +1271,7 @@ function App() {
                 Hoş Geldin{userProfile ? `, ${userProfile.name.split(' ')[0]}` : ''}
               </h2>
               <p className="text-slate-500 dark:text-slate-400 mb-10">Nereden başlamak istersin?</p>
-              
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full max-w-4xl">
                 <button onClick={() => fileInputRef.current?.click()} className="bg-slate-100 dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-800 hover:border-indigo-400 dark:hover:border-slate-600 rounded-2xl p-6 flex flex-col items-center justify-center gap-4 transition-all hover:bg-slate-50 dark:hover:bg-[#20242c] shadow-sm hover:shadow-md dark:shadow-none group">
                   <div className="p-4 bg-white dark:bg-[#252a36] rounded-2xl group-hover:scale-110 group-hover:bg-indigo-50 transition-all border border-slate-100 dark:border-none shadow-sm">
@@ -1265,7 +1301,7 @@ function App() {
               )}
               {chatMessages.map((msg) => (
                 <div key={msg.id} className={`flex gap-4 ${msg.type === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
-                  
+
                   {msg.type === 'bot' && (
                     <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center flex-shrink-0 mt-1 shadow-md">
                       <Bot className="w-5 h-5 text-white" />
@@ -1301,7 +1337,7 @@ function App() {
         {/* Input Area */}
         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white dark:from-[#0f1115] dark:via-[#0f1115] to-transparent pt-10 pb-6 px-4">
           <div className="max-w-4xl mx-auto relative flex flex-col gap-2">
-            
+
             {selectedFiles.length > 0 && (
               <div className="flex flex-wrap gap-3 animate-in fade-in slide-in-from-bottom-2 mb-2">
                 {selectedFiles.map((file, idx) => (
@@ -1317,7 +1353,7 @@ function App() {
                       <span className="text-[12px] font-semibold text-slate-800 dark:text-slate-200 truncate">{file.name}</span>
                       <span className="text-[10px] text-slate-500">{(file.size / 1024).toFixed(1)} KB</span>
                     </div>
-                    <button 
+                    <button
                       onClick={() => setSelectedFiles(prev => prev.filter((_, i) => i !== idx))}
                       className="ml-1 p-1 text-slate-400 hover:text-red-500 bg-slate-50 dark:bg-[#252a36] rounded-full transition-colors"
                     >
@@ -1338,7 +1374,7 @@ function App() {
                 <button onClick={() => pdfInputRef.current?.click()} className="p-2 text-slate-500 hover:text-slate-800 dark:hover:text-white rounded-xl hover:bg-slate-200 transition-colors"><Paperclip className="w-5 h-5" /></button>
                 <button onClick={() => fileInputRef.current?.click()} className="p-2 text-slate-500 hover:text-slate-800 dark:hover:text-white rounded-xl hover:bg-slate-200 transition-colors"><Camera className="w-5 h-5" /></button>
               </div>
-              <textarea 
+              <textarea
                 ref={inputRef}
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
@@ -1353,7 +1389,7 @@ function App() {
                   t.style.height = `${Math.min(t.scrollHeight, 128)}px`;
                 }}
               />
-              <button 
+              <button
                 onClick={handleSoruSor}
                 disabled={!inputValue.trim() && selectedFiles.length === 0}
                 className={`p-3 rounded-xl transition-all m-1 flex items-center justify-center ${inputValue.trim() || selectedFiles.length > 0 ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg' : 'bg-slate-200 dark:bg-[#252a36] text-slate-400 cursor-not-allowed'}`}
@@ -1365,8 +1401,8 @@ function App() {
         </div>
 
         {/* File Inputs */}
-        <input ref={fileInputRef} type="file" multiple accept="image/*" onChange={(e) => { if(e.target.files) { setSelectedFiles(prev => [...prev, ...Array.from(e.target.files!)]); if(inputRef.current) inputRef.current.focus(); } }} className="hidden" />
-        <input ref={pdfInputRef} type="file" multiple accept=".pdf" onChange={(e) => { if(e.target.files) { setSelectedFiles(prev => [...prev, ...Array.from(e.target.files!)]); if(inputRef.current) inputRef.current.focus(); } }} className="hidden" />
+        <input ref={fileInputRef} type="file" multiple accept="image/*" onChange={(e) => { if (e.target.files) { setSelectedFiles(prev => [...prev, ...Array.from(e.target.files!)]); if (inputRef.current) inputRef.current.focus(); } }} className="hidden" />
+        <input ref={pdfInputRef} type="file" multiple accept=".pdf" onChange={(e) => { if (e.target.files) { setSelectedFiles(prev => [...prev, ...Array.from(e.target.files!)]); if (inputRef.current) inputRef.current.focus(); } }} className="hidden" />
       </div>
 
       {/* Right Sidebar — Tabbed */}
@@ -1377,18 +1413,17 @@ function App() {
           /* ── EXPANDED: tab buttons + collapse arrow ── */
           <div className="h-[72px] flex items-center px-3 gap-1 border-b border-slate-200 dark:border-slate-800/50">
             {([
-              { key: 'calendar',  icon: <CalendarIcon className="w-4 h-4" />, label: 'Takvim' },
+              { key: 'calendar', icon: <CalendarIcon className="w-4 h-4" />, label: 'Takvim' },
               { key: 'validator', icon: <AlertTriangle className="w-4 h-4" />, label: 'Eksik Bilgi' },
-              { key: 'auditor',   icon: <FileText className="w-4 h-4" />,      label: 'Sözleşme' },
+              { key: 'auditor', icon: <FileText className="w-4 h-4" />, label: 'Sözleşme' },
             ] as const).map(({ key, icon, label }) => (
               <button
                 key={key}
                 onClick={() => setRightTab(key)}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-[11px] font-semibold transition-all duration-200 ${
-                  rightTab === key
+                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-[11px] font-semibold transition-all duration-200 ${rightTab === key
                     ? 'bg-white dark:bg-[#1a1d24] text-indigo-600 dark:text-indigo-400 shadow-sm border border-slate-200 dark:border-slate-700'
                     : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-white/50 dark:hover:bg-white/5'
-                }`}
+                  }`}
               >
                 {icon}{label}
               </button>
@@ -1417,18 +1452,17 @@ function App() {
             {/* Tab icons — centered in remaining space */}
             <div className="flex-1 flex flex-col items-center justify-center gap-4">
               {([
-                { key: 'calendar',  icon: <CalendarIcon className="w-5 h-5" />,   label: 'Takvim',      color: 'text-emerald-500' },
-                { key: 'validator', icon: <AlertTriangle className="w-5 h-5" />,  label: 'Eksik Bilgi', color: 'text-purple-500'  },
-                { key: 'auditor',   icon: <FileText className="w-5 h-5" />,        label: 'Sözleşme',   color: 'text-indigo-500'  },
+                { key: 'calendar', icon: <CalendarIcon className="w-5 h-5" />, label: 'Takvim', color: 'text-emerald-500' },
+                { key: 'validator', icon: <AlertTriangle className="w-5 h-5" />, label: 'Eksik Bilgi', color: 'text-purple-500' },
+                { key: 'auditor', icon: <FileText className="w-5 h-5" />, label: 'Sözleşme', color: 'text-indigo-500' },
               ] as const).map(({ key, icon, label, color }) => (
                 <div key={key} className="relative group">
                   <button
                     onClick={() => { setRightTab(key); setIsRightExpanded(true); }}
-                    className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all duration-200 shadow-sm ${
-                      rightTab === key
+                    className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all duration-200 shadow-sm ${rightTab === key
                         ? 'bg-white dark:bg-[#1a1d24] ring-1 ring-slate-300 dark:ring-slate-700'
                         : 'bg-slate-100 dark:bg-[#1a1d24] hover:bg-slate-200 dark:hover:bg-slate-800/80'
-                    } ${color}`}
+                      } ${color}`}
                   >
                     {icon}
                   </button>
@@ -1525,9 +1559,9 @@ function App() {
 
           {/* ── TAB: VALIDATOR (READ-ONLY) ── */}
           {rightTab === 'validator' && isRightExpanded && (
-            <MissingInfoPanel 
-              missingFields={missingFields} 
-              isComplete={missingFields.length === 0} 
+            <MissingInfoPanel
+              missingFields={missingFields}
+              isComplete={missingFields.length === 0}
             />
           )}
 
@@ -1543,7 +1577,9 @@ function App() {
                   <p className="text-[11px] text-slate-500">Risk analizi ve eksik maddeler</p>
                 </div>
               </div>
-              {auditorReportData ? (
+              {auditData ? (
+                <AuditorReport data={auditData} onItemClick={handleAuditorItemClick} />
+              ) : auditorReportData ? (
                 <AuditorReport data={auditorReportData} onItemClick={handleAuditorItemClick} />
               ) : (
                 <div className="flex flex-col items-center justify-center py-12 px-4 text-center gap-4 bg-slate-50 dark:bg-slate-800/20 rounded-3xl border border-dashed border-slate-200 dark:border-slate-700">

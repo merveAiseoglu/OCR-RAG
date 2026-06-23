@@ -57,11 +57,12 @@ def _compare_with_llm(doc1_text: str, doc2_text: str) -> ComparisonResult:
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
-            "You are an analytical auditor. Your task is to strictly compare two versions of a document "
-            "and identify changed clauses, discrepancies (like prices, ratios, or dates), and missing sections. "
-            "Provide a risk score from 1 to 10 based on the severity of the differences."
+            "Sen uzman bir analitik denetçisin. Görevin, bir belgenin iki versiyonunu sıkı bir şekilde karşılaştırmak; "
+            "değişen maddeleri, tutarsızlıkları (fiyatlar, oranlar veya tarihler gibi) ve eksik bölümleri tespit etmektir. "
+            "Farklılıkların ciddiyetine bağlı olarak 1 ile 10 arasında bir risk skoru belirle. "
+            "Tüm analizlerini, bulgularını ve açıklamalarını kesinlikle Türkçe olarak yapmalısın."
         )),
-        ("user", "Please compare the following documents.\n\nDocument 1:\n{doc1_text}\n\nDocument 2:\n{doc2_text}")
+        ("user", "Lütfen aşağıdaki belgeleri karşılaştır.\n\nBelge 1:\n{doc1_text}\n\nBelge 2:\n{doc2_text}")
     ])
 
     chain = prompt | structured_llm
@@ -81,11 +82,12 @@ def _summarize_with_llm(comparison_results: dict) -> str:
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
-            "You are an executive assistant. Your task is to write a concise 2-3 sentence executive summary "
-            "for top management based on document comparison results. Ensure you mention the risk score "
-            "and major discrepancies/changes clearly."
+            "Sen üst düzey bir yönetici asistanısın. Görevin, belge karşılaştırma sonuçlarına dayanarak "
+            "üst yönetim için 2-3 cümlelik öz ve net bir yönetici özeti yazmaktır. "
+            "Risk skorunu ve önemli tutarsızlıkları/değişiklikleri net bir şekilde belirttiğinden emin ol. "
+            "Bu özeti kesinlikle Türkçe olarak yazmalısın."
         )),
-        ("user", "Comparison Results:\n{comparison_results}")
+        ("user", "Karşılaştırma Sonuçları:\n{comparison_results}")
     ])
 
     chain = prompt | llm

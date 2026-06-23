@@ -126,6 +126,55 @@ function AccordionCard({ item, onClick }: { item: AuditorChange; onClick?: () =>
 export const AuditorReport: React.FC<AuditorReportProps> = ({ data, onItemClick }) => {
   const [showMissing, setShowMissing] = useState(false);
 
+  // Resolve root object (handles qResp.data which contains audit_result)
+  let root = data;
+  if (data && 'audit_result' in data && data.audit_result) {
+    root = (data as any).audit_result;
+  }
+  
+  // Resolve comparison results
+  let comp = root;
+  if (root && 'comparison_results' in root && root.comparison_results) {
+    comp = (root as any).comparison_results;
+  }
+
+  const score = comp?.risk_score ?? root?.risk_score ?? data?.risk_score ?? 0;
+  const summary = root?.executive_summary ?? data?.executive_summary ?? '';
+  const timestamp = root?.timestamp ?? data?.timestamp ?? '';
+
+  // Resolve changes list
+  let changesList: AuditorChange[] = [];
+  if (comp && 'changes' in comp && Array.isArray((comp as any).changes)) {
+    changesList = (comp as any).changes;
+  } else if (root && 'changes' in root && Array.isArray((root as any).changes)) {
+    changesList = (root as any).changes;
+  } else if (data && 'changes' in data && Array.isArray((data as any).changes)) {
+    changesList = (data as any).changes;
+  } else {
+    const clauses = (comp as any)?.changed_clauses || (root as any)?.changed_clauses || [];
+    clauses.forEach((c: string) => {
+      changesList.push({ type: 'degisiklik', title: 'Madde Değişikliği', description: c, severity: 'medium' });
+    });
+    const disc = (comp as any)?.discrepancies || (root as any)?.discrepancies || [];
+    disc.forEach((d: string) => {
+      changesList.push({ type: 'risk', title: 'Belge Tutarsızlığı', description: d, severity: 'high' });
+    });
+  }
+
+  // Resolve missing list
+  let missingList: string[] = [];
+  if (comp && 'missing_clauses' in comp && Array.isArray((comp as any).missing_clauses)) {
+    missingList = (comp as any).missing_clauses;
+  } else if (root && 'missing_clauses' in root && Array.isArray((root as any).missing_clauses)) {
+    missingList = (root as any).missing_clauses;
+  } else if (data && 'missing_clauses' in data && Array.isArray((data as any).missing_clauses)) {
+    missingList = (data as any).missing_clauses;
+  } else if (comp && 'missing_sections' in comp && Array.isArray((comp as any).missing_sections)) {
+    missingList = (comp as any).missing_sections;
+  } else if (root && 'missing_sections' in root && Array.isArray((root as any).missing_sections)) {
+    missingList = (root as any).missing_sections;
+  }
+
   return (
     <div className="w-full bg-white dark:bg-[#1a1d24] border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-400">
       {/* Header */}
@@ -135,8 +184,8 @@ export const AuditorReport: React.FC<AuditorReportProps> = ({ data, onItemClick 
         </div>
         <div>
           <h2 className="text-white font-bold text-base">Sözleşme Denetçi Raporu</h2>
-          {data.timestamp && (
-            <p className="text-slate-400 text-xs mt-0.5">{new Date(data.timestamp).toLocaleString('tr-TR')}</p>
+          {timestamp && (
+            <p className="text-slate-400 text-xs mt-0.5">{new Date(timestamp).toLocaleString('tr-TR')}</p>
           )}
         </div>
       </div>
@@ -144,24 +193,24 @@ export const AuditorReport: React.FC<AuditorReportProps> = ({ data, onItemClick 
       <div className="p-6 flex flex-col gap-6">
         {/* Risk Score */}
         <div className="flex flex-col sm:flex-row items-center gap-6">
-          <RiskRing score={data.risk_score} />
+          <RiskRing score={score} />
           <div className="flex-1">
             <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
               <Info className="w-3.5 h-3.5" /> Yönetici Özeti
             </p>
             <p className="text-slate-800 dark:text-slate-200 text-sm leading-relaxed font-medium">
-              {data.executive_summary}
+              {summary}
             </p>
           </div>
         </div>
 
         {/* Changes */}
-        {data.changes.length > 0 && (
+        {changesList.length > 0 && (
           <div className="flex flex-col gap-2">
             <h3 className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-              Tespit Edilen Değişiklikler & Riskler ({data.changes.length})
+              Tespit Edilen Değişiklikler & Riskler ({changesList.length})
             </h3>
-            {data.changes.map((item, i) => (
+            {changesList.map((item, i) => (
               <AccordionCard 
                 key={i} 
                 item={item} 
@@ -172,7 +221,7 @@ export const AuditorReport: React.FC<AuditorReportProps> = ({ data, onItemClick 
         )}
 
         {/* Missing Clauses */}
-        {data.missing_clauses.length > 0 && (
+        {missingList.length > 0 && (
           <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
             <button
               onClick={() => setShowMissing(!showMissing)}
@@ -181,14 +230,14 @@ export const AuditorReport: React.FC<AuditorReportProps> = ({ data, onItemClick 
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber-500" />
                 <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">
-                  Eksik Maddeler ({data.missing_clauses.length})
+                  Eksik Maddeler ({missingList.length})
                 </span>
               </div>
               {showMissing ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
             </button>
             {showMissing && (
               <ul className="border-t border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800 animate-in slide-in-from-top-2 duration-200">
-                {data.missing_clauses.map((clause, i) => (
+                {missingList.map((clause, i) => (
                   <li key={i} className="px-4 py-3 flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
                     <span className="w-5 h-5 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center text-[10px] font-bold text-slate-500 flex-shrink-0">{i + 1}</span>
                     {clause}
